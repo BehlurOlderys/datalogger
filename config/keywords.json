@@ -1,0 +1,6 @@
+{
+  "CONSTANTS": {
+    "MSG_DUMP": "DUMP",
+    "SERIAL_BAUDRATE": 38400
+  }
+}
