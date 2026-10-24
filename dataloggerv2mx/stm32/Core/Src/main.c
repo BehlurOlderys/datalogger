@@ -171,10 +171,20 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint8_t desiredMainTrig = GPIO_PIN_RESET;
+  uint8_t desiredAuxTrig = GPIO_PIN_SET;
   while (1)
   {
+	  char led_state[50];
+	  sprintf(led_state, "MAIN: %d, AUX: %d\r\n", desiredMainTrig, desiredAuxTrig);
+	  HAL_UART_Transmit(&huart1, (uint8_t*)led_state, strlen(led_state), 100);
+
 	  HAL_UART_Transmit(&huart1, tekst, sizeof(tekst)-1, 100);
-	  HAL_Delay(1000);
+	  HAL_Delay(5000);
+	  HAL_GPIO_WritePin(GPIOA, MAIN_TRIG_Pin, desiredMainTrig);
+	  HAL_GPIO_WritePin(GPIOA, AUX_TRIG_Pin, desiredMainTrig);
+	  desiredMainTrig = (desiredMainTrig == GPIO_PIN_RESET) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+//	  desiredAuxTrig = (desiredAuxTrig == GPIO_PIN_RESET) ? GPIO_PIN_SET : GPIO_PIN_RESET;
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
