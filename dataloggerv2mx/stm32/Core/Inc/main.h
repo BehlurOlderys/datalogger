@@ -59,6 +59,10 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define FLASH_CS_Pin GPIO_PIN_0
 #define FLASH_CS_GPIO_Port GPIOA
+#define AUX_TRIG_Pin GPIO_PIN_5
+#define AUX_TRIG_GPIO_Port GPIOA
+#define MAIN_TRIG_Pin GPIO_PIN_6
+#define MAIN_TRIG_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 
