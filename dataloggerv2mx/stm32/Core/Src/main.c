@@ -21,8 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
+
 #include "logger.h"
+
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +47,8 @@
 #define MAIN_MODE_COMMUNICATION 0xFC
 #define MAIN_MODE_UNDEFINED 	0x00
 
-#define RX_BUFFER_SIZE 	1024
+#define RX_BUFFER_SIZE 	256
+#define COMMAND_SIZE    64
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -60,20 +63,26 @@ I2C_HandleTypeDef hi2c1;
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 uint8_t welcome[] = "===datalogger v2===\r\n";
-uint8_t tekst[] = "Hello, world!\r\n";
+uint8_t tekst[] = "MEAS MODE\r\n";
 uint8_t errorUnitializedModeString[] = "MODE INIT FAILURE\r\n";
 uint8_t errorUnhandledModeString[] = "UNKNOWN MODE\r\n";
 volatile uint8_t currentMode = MAIN_MODE_INITIAL;
 uint8_t rx_buffer[RX_BUFFER_SIZE];
-uint16_t rx_index = 0;
+uint8_t actualRxString[COMMAND_SIZE];
+uint8_t bufReadPos = 0;
+uint8_t bufWritePos = 0;
+uint8_t cmdWritePos = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
@@ -99,11 +108,6 @@ static void W25Q64_Read_ID(uint8_t *id_buffer)
 static void measurementModeStuff()
 {
 	  uint8_t desiredMainTrig = GPIO_PIN_RESET;
-	  uint8_t desiredAuxTrig = GPIO_PIN_SET;
-	  char led_state[50];
-	  sprintf(led_state, "MAIN: %d, AUX: %d\r\n", desiredMainTrig, desiredAuxTrig);
-	  logger_log(&huart1, (uint8_t*)led_state);
-
 	  HAL_UART_Transmit(&huart1, tekst, sizeof(tekst)-1, 100);
 	  HAL_Delay(5000);
 	  HAL_GPIO_WritePin(GPIOA, MAIN_TRIG_Pin, desiredMainTrig);
@@ -114,36 +118,50 @@ static void measurementModeStuff()
 
 static void communicationModeStuff()
 {
-	logger_logC(&huart1, "COMM MODE!\n");
-	uint8_t next_byte;
-    if (HAL_UART_Receive(&huart1, &next_byte, 1, 10) != HAL_OK)
-    {
-    	logger_logC(&huart1, "RCV ERR: <<");
-    	HAL_UART_Transmit(&huart1, rx_buffer, rx_index, 100);
-    	logger_logC(&huart1, ">>\r\n");
-    	currentMode = MAIN_MODE_UNDEFINED;
-    	return;
-    }
-	if (rx_index < RX_BUFFER_SIZE - 1)
-	{
-		rx_buffer[++rx_index] = next_byte;
+	logger_logC(&huart1, "COMM MODE!\r\n");
+	while (bufReadPos != bufWritePos){
+		actualRxString[cmdWritePos++] = rx_buffer[bufReadPos++];
 	}
-	else
+	if (cmdWritePos > 0 &&
+			(actualRxString[cmdWritePos-1] == '\r' ||
+			 actualRxString[cmdWritePos-1] == '\n'))
 	{
-    	logger_logC(&huart1, "BUFF OVRFLN\r\n");
-    	currentMode = MAIN_MODE_UNDEFINED;
-    	return;
+		cmdWritePos = 0;
+		logger_log(&huart1, actualRxString);
+		memset(actualRxString, 0, sizeof(actualRxString));
+		logger_logC(&huart1, "\r\n");
 	}
-    if (next_byte == '\n')
-    {
-    	rx_buffer[rx_index] = '\0';
-    	HAL_UART_Transmit(&huart1, (uint8_t*)"ACK: ", 5, 10);
-    	logger_log(&huart1, rx_buffer);
-    	// TODO: handle command?
-		rx_index = 0;
-		currentMode = MAIN_MODE_MEASUREMENT;
-		HAL_UART_Receive_IT(&huart1, &(rx_buffer[0]), 1);
-    }
+	currentMode = MAIN_MODE_MEASUREMENT;
+	//		HAL_UART_Receive_IT(&huart1, &(rx_buffer[0]), 1);
+//	uint8_t next_byte;
+//    if (HAL_UART_Receive(&huart1, &next_byte, 1, 10) != HAL_OK)
+//    {
+//    	logger_logC(&huart1, "RCV ERR: <<");
+//    	HAL_UART_Transmit(&huart1, rx_buffer, rx_index, 100);
+//    	logger_logC(&huart1, ">>\r\n");
+//    	currentMode = MAIN_MODE_UNDEFINED;
+//    	return;
+//    }
+//	if (rx_index < RX_BUFFER_SIZE - 1)
+//	{
+//		rx_buffer[++rx_index] = next_byte;
+//	}
+//	else
+//	{
+//    	logger_logC(&huart1, "BUFF OVRFLN\r\n");
+//    	currentMode = MAIN_MODE_UNDEFINED;
+//    	return;
+//	}
+//    if (next_byte == '\n')
+//    {
+//    	rx_buffer[rx_index] = '\0';
+//    	HAL_UART_Transmit(&huart1, (uint8_t*)"ACK: ", 5, 10);
+//    	logger_log(&huart1, rx_buffer);
+//    	// TODO: handle command?
+//		rx_index = 0;
+//		currentMode = MAIN_MODE_MEASUREMENT;
+//		HAL_UART_Receive_IT(&huart1, &(rx_buffer[0]), 1);
+//    }
 }
 
 static void errorUninitializedMode()
@@ -158,13 +176,15 @@ static void errorUnhandledMainMode()
 	HAL_Delay(5000);
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
     if (huart->Instance == USART1)
     {
     	currentMode = MAIN_MODE_COMMUNICATION;
+    	bufWritePos = Size;
     }
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -196,6 +216,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
@@ -220,16 +241,16 @@ int main(void)
       }
       else
       {
-    	  char msg[30];
-    	  sprintf(msg, "LSM6 ID: 0x%02X\r\n", lsm6dso_id);
+    	  char msg[16] = {"LSM6ID   \r\n"};
+    	  msg[9] = lsm6dso_id;
     	  logger_log(&huart1, (uint8_t*)msg);
     	  HAL_UART_Transmit(&huart1, lsmError, sizeof(lsmError)-1, 100);
       }
   }
   else
   {
-	  char wtf[30];
-	  sprintf(wtf, "StatusCode: %d\r\n", statusCode);
+	  char wtf[20] = "StatusCode:     \r\n";
+	  wtf[13] = statusCode;
 	  logger_log(&huart1, (uint8_t*)wtf);
   }
 
@@ -245,15 +266,17 @@ int main(void)
   }
   W25Q64_Read_ID(flash_id);
 
-  char lol[50];
-  sprintf(lol, "SPI Flash ID: {0x%02X, 0x%02X, 0x%02X}\r\n", flash_id[0], flash_id[1], flash_id[2]);
+  char lol[20] = "SPI ID:     \r\n";
+  lol[9] = flash_id[0];
+  lol[11] = flash_id[1];
+  lol[13] = flash_id[2];
   logger_log(&huart1, (uint8_t*)lol);
   currentMode = MAIN_MODE_MEASUREMENT;
-  logger_logC(&huart1, "MEAS\r\n");
+  logger_logC(&huart1, "SETTING MEAS\r\n");
 
   // interrupts for uart read:
-  HAL_UART_Receive_IT(&huart1, &(rx_buffer[0]), 1);
-
+//  HAL_UART_Receive_IT(&huart1, &(rx_buffer[0]), 1);
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_buffer, RX_BUFFER_SIZE);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -455,6 +478,22 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
 }
 
