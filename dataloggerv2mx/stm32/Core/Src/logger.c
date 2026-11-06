@@ -5,13 +5,13 @@
  *      Author: florian
  */
 #include "logger.h"
-#include "stm32c0xx_hal.h"
-#include <string.h>
 
-void logger_log(UART_HandleTypeDef* uart, uint8_t text[]){
-	HAL_UART_Transmit(uart, text, strlen((char*)text), 100);
-}
+void UART_SendString(char *str) {
+    while (*str) {
+        // Wait until the hardware is ready for the next character
+        while (!LL_USART_IsActiveFlag_TXE(USART1));
 
-void logger_logC(UART_HandleTypeDef* uart, const char* text){
-	HAL_UART_Transmit(uart, (uint8_t*)text, strlen(text), 100);
+        // Send the current character and move to the next one
+        LL_USART_TransmitData8(USART1, *str++);
+    }
 }
