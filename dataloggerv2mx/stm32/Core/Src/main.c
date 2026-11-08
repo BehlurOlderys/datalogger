@@ -59,6 +59,7 @@ uint8_t BMP388_VerifyID(void);
 void BMP388_write(uint8_t where, uint8_t what);
 void BMP388_readCoeffs(uint8_t size);
 int32_t BMP388_Read_Raw();
+void int_to_ascii_4char(uint16_t val, char* buf);
 int32_t BMP388_compensate_temperature(uint32_t uncomp_temp);
 /* USER CODE END PFP */
 
@@ -158,16 +159,27 @@ int32_t BMP388_Read_Raw()
     return temp;
 }
 
+void int_to_ascii_4char(uint16_t val, char* buf) {
+    buf[3] = (val % 10) + '0'; val /= 10;
+    buf[2] = (val % 10) + '0'; val /= 10;
+    buf[1] = (val % 10) + '0'; val /= 10;
+    buf[0] = (val % 10) + '0';
+}
+
 int32_t BMP388_compensate_temperature(uint32_t raw_temp)
 {
-    // TODO remvoe doubles!
-    double pd_T1 = (double)bmp388_T1 * 256.0;                  // T1 / 2^-8
-    double pd_T2 = (double)bmp388_T2 / 1073741824.0;          // T2 / 2^30
-    double pd_T3 = (double)bmp388_T3 / 281474976710656.0;     // T3 / 2^48
-    double partial_data1 = (double)raw_temp - pd_T1;
-    double partial_data2 = partial_data1 * pd_T2;
-    double temp_celsius = partial_data2 + (partial_data1 * partial_data1) * pd_T3;
-    return (int32_t)(100.*temp_celsius);
+    int64_t t64 = (int64_t)raw_temp;
+    int64_t A64 = (int64_t)bmp388_T1;
+    int64_t B64 = (int64_t)bmp388_T2;
+    int64_t C64 = (int64_t)bmp388_T3;
+
+    int64_t sum_q22 = ((t64 * B64) >> 8)
+                      - (A64 * B64)
+                      + ((t64 * t64 * C64) >> 26)
+                      - ((C64 * A64 * t64) >> 17)
+                      + ((A64 * A64 * C64) >> 10);
+
+    return (int32_t)((sum_q22 * 100) >> 22);
 }
 /* USER CODE END 0 */
 
@@ -217,7 +229,10 @@ int main(void)
           __NOP();
       }
       pressure = BMP388_Read_Raw();
-      UART_SendString("BMP OK\n\r");
+      char tstring[5] = {0};
+      int_to_ascii_4char(pressure, tstring);
+      UART_SendString(tstring);
+      UART_SendString(" BMP OK\n\r");
   }
   else
   {
