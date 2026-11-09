@@ -11,6 +11,6 @@
 #include <stm32c031xx.h>
 #include <stm32c0xx_ll_usart.h>
 
-void UART_SendString(char *str);
+void sendStringUart(char *str);
 
 #endif /* INC_LOGGER_H_ */

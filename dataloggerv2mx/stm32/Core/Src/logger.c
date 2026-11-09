@@ -6,7 +6,7 @@
  */
 #include "logger.h"
 
-void UART_SendString(char *str) {
+void sendStringUart(char *str) {
     while (*str) {
         // Wait until the hardware is ready for the next character
         while (!LL_USART_IsActiveFlag_TXE(USART1));

@@ -6,6 +6,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "logger.h"
+#include "bmp388.h"
+#include "base.h"
+#include "mh_i2c.h"
 #include "stm32c0xx_ll_i2c.h"
 /* USER CODE END Includes */
 
@@ -15,21 +18,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SUCCESS 0
-#define FAILURE 1
-
-#define I2C_MAX_READ_BYTES         6
-
-#define BMP388_ADDR_W          0xEC
-#define BMP388_ADDR_R          0xED
-
-#define BMP388_REG_CHIP_ID     0x00
-#define BMP388_REG_PWR_CTRL    0x1B
-#define BMP388_REG_PRESS_DATA  0x04
-#define BMP388_REG_COEFF       0x31
-
-#define BMP388_VAL_PT          0x33
-#define BMP388_EXPECTED_ID     0x50
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -41,10 +29,9 @@
 I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN PV */
-static volatile uint16_t bmp388_T1;
-static volatile uint16_t bmp388_T2;
-static volatile int8_t bmp388_T3;
-static volatile uint32_t pressure;
+static int32_t currentPressure;    //x100
+static int16_t currentTemperature; //x100
+static BMP388_Calib_t bmp388Calibration;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -55,131 +42,17 @@ static void MX_USART1_UART_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-uint8_t BMP388_VerifyID(void);
-void BMP388_write(uint8_t where, uint8_t what);
-void BMP388_readCoeffs(uint8_t size);
-int32_t BMP388_Read_Raw();
 void int_to_ascii_4char(uint16_t val, char* buf);
-int32_t BMP388_compensate_temperature(uint32_t uncomp_temp);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-uint8_t BMP388_VerifyID(void) {
-    uint8_t chip_id = 0;
-    while (LL_I2C_IsActiveFlag_BUSY(I2C1));
-
-    LL_I2C_HandleTransfer(I2C1, BMP388_ADDR_W, LL_I2C_ADDRSLAVE_7BIT, 1, LL_I2C_MODE_SOFTEND, LL_I2C_GENERATE_START_WRITE);
-    while (!LL_I2C_IsActiveFlag_TXIS(I2C1));
-
-    LL_I2C_TransmitData8(I2C1, BMP388_REG_CHIP_ID);
-    while (!LL_I2C_IsActiveFlag_TC(I2C1));
-
-    LL_I2C_HandleTransfer(I2C1, BMP388_ADDR_R, LL_I2C_ADDRSLAVE_7BIT, 1, LL_I2C_MODE_AUTOEND, LL_I2C_GENERATE_START_READ);
-    while (!LL_I2C_IsActiveFlag_RXNE(I2C1));
-
-    chip_id = LL_I2C_ReceiveData8(I2C1);
-    while (!LL_I2C_IsActiveFlag_STOP(I2C1));
-    LL_I2C_ClearFlag_STOP(I2C1);
-    // 5. Check if it matches the official BMP388 Chip ID (0x50)
-    return (chip_id == 0x50) ? SUCCESS : FAILURE;
-}
-
-void BMP388_write(uint8_t where, uint8_t what)
-{
-    while (LL_I2C_IsActiveFlag_BUSY(I2C1));
-
-    LL_I2C_HandleTransfer(I2C1, BMP388_ADDR_W, LL_I2C_ADDRSLAVE_7BIT, 2, LL_I2C_MODE_AUTOEND, LL_I2C_GENERATE_START_WRITE);
-    while (!LL_I2C_IsActiveFlag_TXIS(I2C1));
-
-    LL_I2C_TransmitData8(I2C1, where);
-    while (!LL_I2C_IsActiveFlag_TXIS(I2C1));
-
-    LL_I2C_TransmitData8(I2C1, what);
-    while (!LL_I2C_IsActiveFlag_STOP(I2C1)){
-        if (LL_I2C_IsActiveFlag_NACK(I2C1))
-        {
-            while(1){ __NOP();}
-        }
-    }
-    LL_I2C_ClearFlag_STOP(I2C1);
-}
-
-void BMP388_readCoeffs(uint8_t size){
-    size = 5; // TODO REMOVE THIS AND MAKE IT GENERIC
-    uint8_t address = BMP388_REG_COEFF;
-    uint8_t data[I2C_MAX_READ_BYTES] = {0};
-
-    while (LL_I2C_IsActiveFlag_BUSY(I2C1));
-
-    LL_I2C_HandleTransfer(I2C1, BMP388_ADDR_W, LL_I2C_ADDRSLAVE_7BIT, 1, LL_I2C_MODE_SOFTEND, LL_I2C_GENERATE_START_WRITE);
-    while (!LL_I2C_IsActiveFlag_TXIS(I2C1));
-
-    LL_I2C_TransmitData8(I2C1, address);
-    while (!LL_I2C_IsActiveFlag_TC(I2C1));
-
-    LL_I2C_HandleTransfer(I2C1, BMP388_ADDR_R, LL_I2C_ADDRSLAVE_7BIT, size, LL_I2C_MODE_AUTOEND, LL_I2C_GENERATE_START_READ);
-    for (uint8_t i=0; i<size; ++i)
-    {
-        while (!LL_I2C_IsActiveFlag_RXNE(I2C1));
-        data[i] = LL_I2C_ReceiveData8(I2C1);
-    }
-    LL_I2C_ClearFlag_STOP(I2C1);
-
-    bmp388_T1 = ((uint16_t)data[1] << 8) | (uint16_t)data[0];
-    bmp388_T2 = ((uint16_t)data[3] << 8) | (uint16_t)data[2];
-    bmp388_T3 = data[4];
-}
-
-int32_t BMP388_Read_Raw()
-{
-    uint8_t data[6] = {0};
-
-    while (LL_I2C_IsActiveFlag_BUSY(I2C1));
-
-    LL_I2C_HandleTransfer(I2C1, BMP388_ADDR_W, LL_I2C_ADDRSLAVE_7BIT, 1, LL_I2C_MODE_SOFTEND, LL_I2C_GENERATE_START_WRITE);
-    while (!LL_I2C_IsActiveFlag_TXIS(I2C1));
-
-    LL_I2C_TransmitData8(I2C1, BMP388_REG_PRESS_DATA);
-    while (!LL_I2C_IsActiveFlag_TC(I2C1));
-
-    LL_I2C_HandleTransfer(I2C1, BMP388_ADDR_R, LL_I2C_ADDRSLAVE_7BIT, 6, LL_I2C_MODE_AUTOEND, LL_I2C_GENERATE_START_READ);
-    for (uint8_t i=0; i<6; ++i)
-    {
-        while (!LL_I2C_IsActiveFlag_RXNE(I2C1));
-        data[i] = LL_I2C_ReceiveData8(I2C1);
-    }
-
-    LL_I2C_ClearFlag_STOP(I2C1);
-
-    uint32_t raw_pressure = ((uint32_t)data[2] << 16) | ((uint32_t)data[1] << 8) | (uint32_t)data[0];
-    uint32_t raw_temp = ((uint32_t)data[5] << 16) | ((uint32_t)data[4] << 8) | (uint32_t)data[3];
-    //TODO: calculate pressure!
-    const int32_t temp = BMP388_compensate_temperature(raw_temp);
-    return temp;
-}
 
 void int_to_ascii_4char(uint16_t val, char* buf) {
     buf[3] = (val % 10) + '0'; val /= 10;
     buf[2] = (val % 10) + '0'; val /= 10;
     buf[1] = (val % 10) + '0'; val /= 10;
     buf[0] = (val % 10) + '0';
-}
-
-int32_t BMP388_compensate_temperature(uint32_t raw_temp)
-{
-    int64_t t64 = (int64_t)raw_temp;
-    int64_t A64 = (int64_t)bmp388_T1;
-    int64_t B64 = (int64_t)bmp388_T2;
-    int64_t C64 = (int64_t)bmp388_T3;
-
-    int64_t sum_q22 = ((t64 * B64) >> 8)
-                      - (A64 * B64)
-                      + ((t64 * t64 * C64) >> 26)
-                      - ((C64 * A64 * t64) >> 17)
-                      + ((A64 * A64 * C64) >> 10);
-
-    return (int32_t)((sum_q22 * 100) >> 22);
 }
 /* USER CODE END 0 */
 
@@ -215,30 +88,29 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   LL_mDelay(10);
-  UART_SendString("Hello, world!\n\r");
+  sendStringUart("Hello, world!\n\r");
 
-  UART_SendString("INIT BMP\n\r");
-  if (BMP388_VerifyID() == SUCCESS)
+  sendStringUart("INIT BMP\n\r");
+  if (bmp388Init() == SUCCESS)
   {
-      BMP388_write(BMP388_REG_PWR_CTRL, BMP388_VAL_PT);
       for (volatile uint32_t i = 0; i < 80000; i++) {
           __NOP();
       }
-      BMP388_readCoeffs(5);
+      bmp388ReadCoeffs(&bmp388Calibration);
       for (volatile uint32_t i = 0; i < 80000; i++) {
           __NOP();
       }
-      pressure = BMP388_Read_Raw();
+      bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
       char tstring[5] = {0};
-      int_to_ascii_4char(pressure, tstring);
-      UART_SendString(tstring);
-      UART_SendString(" BMP OK\n\r");
+      int_to_ascii_4char(currentTemperature, tstring);
+      sendStringUart(tstring);
+      sendStringUart(" BMP OK\n\r");
   }
   else
   {
-      UART_SendString("BMP FAIL\n\r");
+      sendStringUart("BMP FAIL\n\r");
   }
-  UART_SendString("WHILE\n\r");
+  sendStringUart("WHILE\n\r");
   /* USER CODE END 2 */
 
   /* Infinite loop */
