@@ -27,8 +27,8 @@ typedef struct __attribute__((packed)) {
     int8_t   P11;
 } BMP388_Calib_t;
 
-uint8_t bmp388Init();
-void bmp388ReadCoeffs(BMP388_Calib_t* calibration);
-void bmp388Measure(BMP388_Calib_t const* calibration, int32_t* pressure, int16_t* temp);
+uint8_t bmp388Init      ();
+void    bmp388ReadCoeffs(BMP388_Calib_t* calibration);
+void    bmp388Measure   (BMP388_Calib_t const* calibration, int32_t* pressure, int16_t* temp);
 
 #endif /* INC_BMP388_H_ */

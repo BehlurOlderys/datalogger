@@ -47,13 +47,6 @@ void int_to_ascii_4char(uint16_t val, char* buf);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-void int_to_ascii_4char(uint16_t val, char* buf) {
-    buf[3] = (val % 10) + '0'; val /= 10;
-    buf[2] = (val % 10) + '0'; val /= 10;
-    buf[1] = (val % 10) + '0'; val /= 10;
-    buf[0] = (val % 10) + '0';
-}
 /* USER CODE END 0 */
 
 /**
@@ -102,9 +95,14 @@ int main(void)
       }
       bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
       char tstring[5] = {0};
-      int_to_ascii_4char(currentTemperature, tstring);
+      char pstring[8] = {0};
+      intToAscii(currentTemperature, tstring, 4);
+      intToAscii(currentPressure, pstring, 7);
+      sendStringUart("T=");
       sendStringUart(tstring);
-      sendStringUart(" BMP OK\n\r");
+      sendStringUart(", P=");
+      sendStringUart(pstring);
+      sendStringUart(", BMP OK\n\r");
   }
   else
   {
@@ -117,7 +115,19 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while(1)
   {
-	  __WFI();
+      for (volatile uint32_t i = 0; i < 800000; i++) {
+          __NOP();
+      }
+      bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
+      char tstring[5] = {0};
+      char pstring[8] = {0};
+      intToAscii(currentTemperature, tstring, 4);
+      intToAscii(currentPressure, pstring, 7);
+      sendStringUart("T=");
+      sendStringUart(tstring);
+      sendStringUart(", P=");
+      sendStringUart(pstring);
+      sendStringUart("\n\r");
   }
     /* USER CODE END WHILE */
 
@@ -132,6 +142,8 @@ int main(void)
 void SystemClock_Config(void)
 {
 
+  LL_FLASH_SetLatency(LL_FLASH_LATENCY_1);
+
   /* HSI configuration and activation */
   LL_RCC_HSI_Enable();
   while(LL_RCC_HSI_IsReady() != 1)
@@ -139,7 +151,7 @@ void SystemClock_Config(void)
   }
 
   LL_RCC_HSI_SetCalibTrimming(64);
-  LL_RCC_SetHSIDiv(LL_RCC_HSI_DIV_4);
+  LL_RCC_SetHSIDiv(LL_RCC_HSI_DIV_1);
   /* Set AHB prescaler*/
   LL_RCC_SetAHBPrescaler(LL_RCC_HCLK_DIV_1);
 
@@ -152,7 +164,7 @@ void SystemClock_Config(void)
   /* Set APB1 prescaler*/
   LL_RCC_SetAPB1Prescaler(LL_RCC_APB1_DIV_1);
   /* Update CMSIS variable (which can be updated also through SystemCoreClockUpdate function) */
-  LL_SetSystemCoreClock(12000000);
+  LL_SetSystemCoreClock(48000000);
 
    /* Update the time base */
   if (HAL_InitTick (TICK_INT_PRIORITY) != HAL_OK)
@@ -177,7 +189,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00200410;
+  hi2c1.Init.Timing = 0x0090194B;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;

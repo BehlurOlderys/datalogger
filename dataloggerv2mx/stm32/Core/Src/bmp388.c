@@ -12,7 +12,9 @@
 #define BMP388_EXPECTED_ID     0x50
 #define BMP388_VAL_PT          0x33
 
-static int32_t bmp388CompensateTemperature(BMP388_Calib_t const* calibration, uint32_t raw_temp)
+static int64_t calibrationTLin;
+
+static int32_t compensateTemperature(BMP388_Calib_t const* calibration, uint32_t raw_temp)
 {
 
     int64_t t64 = (int64_t)raw_temp;
@@ -26,17 +28,12 @@ static int32_t bmp388CompensateTemperature(BMP388_Calib_t const* calibration, ui
                       - ((C64 * A64 * t64) >> 17)
                       + ((A64 * A64 * C64) >> 10);
 
+    calibrationTLin = sum_q22 >> 6;
     return (int32_t)((sum_q22 * 100) >> 22);
 }
 
-static int8_t bmp388CompensatePressure(BMP388_Calib_t const* calibration, uint32_t raw_temp)
+static uint32_t compensatePressure(BMP388_Calib_t const* calibration, uint32_t rawPressure)
 {
-    // TODO!
-    calib_data->reg_calib_data.t_lin = (int64_t)partial_data6;
-    comp_temp = (int64_t)((partial_data6 * 25) / 16384);
-
-    int8_t rslt = BMP3_OK;
-    const struct bmp3_reg_calib_data *reg_calib_data = &calib_data->reg_calib_data;
     int64_t partial_data1;
     int64_t partial_data2;
     int64_t partial_data3;
@@ -45,52 +42,71 @@ static int8_t bmp388CompensatePressure(BMP388_Calib_t const* calibration, uint32
     int64_t partial_data6;
     int64_t offset;
     int64_t sensitivity;
-    uint64_t comp_press;
 
-    partial_data1 = (int64_t)(reg_calib_data->t_lin * reg_calib_data->t_lin);
+    partial_data1 = (int64_t)(calibrationTLin * calibrationTLin);
     partial_data2 = (int64_t)(partial_data1 / 64);
-    partial_data3 = (int64_t)((partial_data2 * reg_calib_data->t_lin) / 256);
-    partial_data4 = (int64_t)((reg_calib_data->par_p8 * partial_data3) / 32);
-    partial_data5 = (int64_t)((reg_calib_data->par_p7 * partial_data1) * 16);
-    partial_data6 = (int64_t)((reg_calib_data->par_p6 * reg_calib_data->t_lin) * 4194304);
-    offset = (int64_t)((reg_calib_data->par_p5 * 140737488355328) + partial_data4 + partial_data5 + partial_data6);
-    partial_data2 = (int64_t)((reg_calib_data->par_p4 * partial_data3) / 32);
-    partial_data4 = (int64_t)((reg_calib_data->par_p3 * partial_data1) * 4);
-    partial_data5 = (int64_t)((reg_calib_data->par_p2 - (int32_t)16384) * reg_calib_data->t_lin * 2097152);
+    partial_data3 = (int64_t)((partial_data2 * calibrationTLin) / 256);
+    partial_data4 = (int64_t)((calibration->P8 * partial_data3) / 32);
+    partial_data5 = (int64_t)((calibration->P7 * partial_data1) * 16);
+    partial_data6 = (int64_t)((calibration->P6 * calibrationTLin) * 4194304);
+    offset = (int64_t)((calibration->P5 * 140737488355328) + partial_data4 + partial_data5 + partial_data6);
+    partial_data2 = (int64_t)((calibration->P4 * partial_data3) / 32);
+    partial_data4 = (int64_t)((calibration->P3 * partial_data1) * 4);
+    partial_data5 = (int64_t)((calibration->P2 - (int32_t)16384) * calibrationTLin * 2097152);
     sensitivity =
-        (int64_t)(((reg_calib_data->par_p1 - (int32_t)16384) * 70368744177664) + partial_data2 + partial_data4 +
+        (int64_t)(((calibration->P1 - (int32_t)16384) * 70368744177664) + partial_data2 + partial_data4 +
                   partial_data5);
-    partial_data1 = (int64_t)((sensitivity / 16777216) * uncomp_data->pressure);
-    partial_data2 = (int64_t)(reg_calib_data->par_p10 * reg_calib_data->t_lin);
-    partial_data3 = (int64_t)(partial_data2 + ((int32_t)65536 * reg_calib_data->par_p9));
-    partial_data4 = (int64_t)((partial_data3 * uncomp_data->pressure) / (int32_t)8192);
+    partial_data1 = (int64_t)((sensitivity / 16777216) * rawPressure);
+    partial_data2 = (int64_t)(calibration->P10 * calibrationTLin);
+    partial_data3 = (int64_t)(partial_data2 + ((int32_t)65536 * calibration->P9));
+    partial_data4 = (int64_t)((partial_data3 * rawPressure) / (int32_t)8192);
 
     /* dividing by 10 followed by multiplying by 10
      * To avoid overflow caused by (uncomp_data->pressure * partial_data4)
      */
-    partial_data5 = (int64_t)((uncomp_data->pressure * (partial_data4 / 10)) / (int32_t)512);
+    partial_data5 = (int64_t)((rawPressure * (partial_data4 / 10)) / (int32_t)512);
     partial_data5 = (int64_t)(partial_data5 * 10);
-    partial_data6 = (int64_t)(uncomp_data->pressure * uncomp_data->pressure);
-    partial_data2 = (int64_t)((reg_calib_data->par_p11 * partial_data6) / (int32_t)65536);
-    partial_data3 = (int64_t)((int64_t)(partial_data2 * uncomp_data->pressure) / 128);
+    partial_data6 = (int64_t)(rawPressure * rawPressure);
+    partial_data2 = (int64_t)((calibration->P11 * partial_data6) / (int32_t)65536);
+    partial_data3 = (int64_t)((int64_t)(partial_data2 * rawPressure) / 128);
     partial_data4 = (int64_t)((offset / 4) + partial_data1 + partial_data5 + partial_data3);
-    comp_press = (((uint64_t)partial_data4 * 25) / (uint64_t)1099511627776);
-
-    if (comp_press < BMP3_MIN_PRES_INT)
-    {
-        comp_press = BMP3_MIN_PRES_INT;
-        rslt = BMP3_W_MIN_PRES;
-    }
-
-    if (comp_press > BMP3_MAX_PRES_INT)
-    {
-        comp_press = BMP3_MAX_PRES_INT;
-        rslt = BMP3_W_MAX_PRES;
-    }
-
-    (*pressure) = comp_press;
-
-    return rslt;
+    return (uint32_t)(((uint64_t)partial_data4 * 25) / (uint64_t)1099511627776);
+//
+//    int64_t pd1, pd2, pd3, pd4, pd5, pd6;
+//    int64_t t_lin = calibrationTLin; // Podmieniona nazwa zmiennej
+//
+//    // 1. Obliczenie wpływu temperatury na czujnik (wielomian par_p9, p10, p11)
+//    pd1 = (t_lin * t_lin) >> 16;
+//    pd2 = (pd1 * (int64_t)calibration->P11) >> 16;
+//    pd3 = (t_lin * (int64_t)calibration->P10) >> 12;
+//    pd4 = ((int64_t)calibration->P9 << 18) + pd2 + pd3;
+//
+//    // 2. Korekcja nieliniowości (par_p5, p6, p7, p8)
+//    pd1 = (t_lin * t_lin) >> 16;
+//    pd2 = (pd1 * (int64_t)calibration->P8) >> 16;
+//    pd3 = (t_lin * (int64_t)calibration->P7) >> 12;
+//    pd5 = ((int64_t)calibration->P6 << 16) + pd2 + pd3;
+//    pd6 = ((pd5 * t_lin) >> 16) + ((int64_t)calibration->P5 << 19);
+//
+//    // 3. Skalowanie bazy czujnika (par_p1, p2, p3, p4)
+//    pd1 = (t_lin * (int64_t)calibration->P3) >> 12;
+//    pd2 = (pd1 + ((int64_t)calibration->P2 << 13)) * t_lin;
+//    pd3 = ((int64_t)calibration->P1 << 15) + (pd2 >> 20) + (((int64_t)calibration->P4 * pd1) >> 16);
+//
+//    // 4. Kompensacja surowego odczytu ciśnienia
+//    pd1 = ((int64_t)rawPressure * (pd4 >> 10)) >> 14;
+//    pd2 = ((int64_t)rawPressure * (int64_t)rawPressure) >> 16;
+//    pd5 = (pd2 * (pd6 >> 12)) >> 16;
+//
+//    int64_t denominator = pd3 + pd1;
+//    if (denominator == 0) return 0;
+//
+//    // Zastąpienie dzielenia przez zmienną szybkim mnożeniem przez odwrotność (stała 2^40)
+//    int64_t inv_denom = ((int64_t)1 << 40) / denominator;
+//    int64_t final_press = (((int64_t)1 << 31) - pd5) * inv_denom;
+//
+//    // Wynik w Paskalach (Pa)
+//    return (uint32_t)(final_press >> 9);
 }
 
 
@@ -132,8 +148,8 @@ void bmp388Measure(BMP388_Calib_t const* calibration, int32_t* pressure, int16_t
     uint8_t data[6] = {0};
     readI2C(BMP388_ADDR, BMP388_REG_PRESS_DATA, data, 6);
 
-    uint32_t raw_pressure = ((uint32_t)data[2] << 16) | ((uint32_t)data[1] << 8) | (uint32_t)data[0];
-    uint32_t raw_temp = ((uint32_t)data[5] << 16) | ((uint32_t)data[4] << 8) | (uint32_t)data[3];
-    //TODO: calculate pressure!
-    *temp = bmp388CompensateTemperature(calibration, raw_temp);
+    uint32_t rawPressure = ((uint32_t)data[2] << 16) | ((uint32_t)data[1] << 8) | (uint32_t)data[0];
+    uint32_t rawTemp = ((uint32_t)data[5] << 16) | ((uint32_t)data[4] << 8) | (uint32_t)data[3];
+    *temp = compensateTemperature(calibration, rawTemp);
+    *pressure = compensatePressure(calibration, rawPressure);
 }
