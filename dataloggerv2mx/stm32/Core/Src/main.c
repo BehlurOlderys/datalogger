@@ -9,6 +9,7 @@
 #include "bmp388.h"
 #include "base.h"
 #include "mh_i2c.h"
+#include "mh_spi.h"
 #include "stm32c0xx_ll_i2c.h"
 /* USER CODE END Includes */
 
@@ -42,11 +43,87 @@ static void MX_USART1_UART_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-void int_to_ascii_4char(uint16_t val, char* buf);
+static void bmp388MeasureAndDisplayOnce();
+static void checkBMP388();
+static void checkLSM6DSO();
+static void checkMX25L32();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void bmp388MeasureAndDisplayOnce()
+{
+    bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
+    char tstring[5] = {0};
+    char pstring[8] = {0};
+    intToAscii(currentTemperature, tstring, 4);
+    intToAscii(currentPressure, pstring, 7);
+    sendStringUart("T=");
+    sendStringUart(tstring);
+    sendStringUart(", P=");
+    sendStringUart(pstring);
+    sendStringUart("\r\n");
+}
+static void checkBMP388()
+{
+    if (bmp388Init() == SUCCESS)
+    {
+        bmp388ReadCoeffs(&bmp388Calibration);
+        LL_mDelay(10);
+        bmp388MeasureAndDisplayOnce();
+        sendStringUart("BMP OK\r\n");
+    }
+    else
+    {
+        sendStringUart("BMP FAIL\r\n");
+        while(1){ __WFI(); }
+    }
+}
+static void checkLSM6DSO()
+{
+    uint8_t chipId = 0;
+    uint8_t result = FAILURE;
+    readI2C(0xD6, 0x0F, &chipId, 1);
+    result = (chipId == 0x6A) ? SUCCESS : FAILURE;
+    if (result == SUCCESS)
+    {
+        sendStringUart("LSM OK\r\n");
+    }
+    else
+    {
+        sendStringUart("LSM FAIL\r\n");
+        while(1){ __WFI(); }
+    }
+}
+
+static void checkMX25L32(){
+    char recvOut[4] = {0};
+
+    LL_GPIO_ResetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
+    readAndWrite1bSPI(0x9F); // JEDEC ID
+    recvOut[0] = readAndWrite1bSPI(0xFF);
+    recvOut[1] = readAndWrite1bSPI(0xFF);
+    recvOut[2] = readAndWrite1bSPI(0xFF);
+    while (LL_SPI_IsActiveFlag_BSY(SPI1));
+    LL_GPIO_SetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
+
+    const uint8_t status = // For MX25L32
+            (recvOut[0] != 0xC2) ||
+            (recvOut[1] != 0x20) ||
+            (recvOut[2] != 0x16);
+
+    sendStringUart("MX25L32: ");
+    if (status == SUCCESS)
+    {
+        sendStringUart("OK");
+    }
+    else
+    {
+        sendStringUart("FAIL");
+        while(1){ __WFI(); }
+    }
+    sendStringUart("\r\n");
+}
 /* USER CODE END 0 */
 
 /**
@@ -80,54 +157,21 @@ int main(void)
   MX_SPI1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  LL_mDelay(10);
-  sendStringUart("Hello, world!\n\r");
 
-  sendStringUart("INIT BMP\n\r");
-  if (bmp388Init() == SUCCESS)
-  {
-      for (volatile uint32_t i = 0; i < 80000; i++) {
-          __NOP();
-      }
-      bmp388ReadCoeffs(&bmp388Calibration);
-      for (volatile uint32_t i = 0; i < 80000; i++) {
-          __NOP();
-      }
-      bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
-      char tstring[5] = {0};
-      char pstring[8] = {0};
-      intToAscii(currentTemperature, tstring, 4);
-      intToAscii(currentPressure, pstring, 7);
-      sendStringUart("T=");
-      sendStringUart(tstring);
-      sendStringUart(", P=");
-      sendStringUart(pstring);
-      sendStringUart(", BMP OK\n\r");
-  }
-  else
-  {
-      sendStringUart("BMP FAIL\n\r");
-  }
-  sendStringUart("WHILE\n\r");
+  LL_mDelay(10);
+  sendStringUart("Hello, world!\r\n");
+  checkBMP388();
+  checkLSM6DSO();
+  checkMX25L32();
+  sendStringUart("WHILE\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while(1)
   {
-      for (volatile uint32_t i = 0; i < 800000; i++) {
-          __NOP();
-      }
-      bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
-      char tstring[5] = {0};
-      char pstring[8] = {0};
-      intToAscii(currentTemperature, tstring, 4);
-      intToAscii(currentPressure, pstring, 7);
-      sendStringUart("T=");
-      sendStringUart(tstring);
-      sendStringUart(", P=");
-      sendStringUart(pstring);
-      sendStringUart("\n\r");
+      LL_mDelay(300);
+      bmp388MeasureAndDisplayOnce();
   }
     /* USER CODE END WHILE */
 
@@ -249,7 +293,7 @@ static void MX_SPI1_Init(void)
   */
   GPIO_InitStruct.Pin = LL_GPIO_PIN_1;
   GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-  GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_HIGH;
   GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
   GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
   GPIO_InitStruct.Alternate = LL_GPIO_AF_0;
@@ -280,7 +324,7 @@ static void MX_SPI1_Init(void)
   SPI_InitStruct.ClockPolarity = LL_SPI_POLARITY_LOW;
   SPI_InitStruct.ClockPhase = LL_SPI_PHASE_1EDGE;
   SPI_InitStruct.NSS = LL_SPI_NSS_SOFT;
-  SPI_InitStruct.BaudRate = LL_SPI_BAUDRATEPRESCALER_DIV2;
+  SPI_InitStruct.BaudRate = LL_SPI_BAUDRATEPRESCALER_DIV16;
   SPI_InitStruct.BitOrder = LL_SPI_MSB_FIRST;
   SPI_InitStruct.CRCCalculation = LL_SPI_CRCCALCULATION_DISABLE;
   SPI_InitStruct.CRCPoly = 7;
@@ -288,6 +332,8 @@ static void MX_SPI1_Init(void)
   LL_SPI_SetStandard(SPI1, LL_SPI_PROTOCOL_MOTOROLA);
   LL_SPI_EnableNSSPulseMgt(SPI1);
   /* USER CODE BEGIN SPI1_Init 2 */
+  LL_SPI_SetRxFIFOThreshold(SPI1, LL_SPI_RX_FIFO_TH_QUARTER);
+  LL_SPI_Enable(SPI1);
   /* USER CODE END SPI1_Init 2 */
 
 }
