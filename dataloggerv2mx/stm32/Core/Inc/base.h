@@ -10,9 +10,7 @@
 
 #include <stdint.h>
 
-#define SUCCESS 0
-#define FAILURE 1
-
-void intToAscii(uint64_t val, char* buf, uint8_t size);
-
+void uintToAscii(uint64_t val, char* buf, uint8_t size);
+void intToAscii(int16_t val, char* buf, uint8_t size);
+void delay1ms(void);
 #endif /* INC_BASE_H_ */

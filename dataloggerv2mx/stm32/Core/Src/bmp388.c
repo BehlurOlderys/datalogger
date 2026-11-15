@@ -1,16 +1,17 @@
 #include "bmp388.h"
 #include "mh_i2c.h"
 #include "base.h"
+#include "stm32c0xx.h"
 
 #define BMP388_ADDR            0xEC
 
-#define BMP388_REG_COEFF       0x31
-#define BMP388_REG_PRESS_DATA  0x04
 #define BMP388_REG_CHIP_ID     0x00
+#define BMP388_REG_PRESS_DATA  0x04
 #define BMP388_REG_PWR_CTRL    0x1B
+#define BMP388_REG_COEFF       0x31
 
-#define BMP388_EXPECTED_ID     0x50
 #define BMP388_VAL_PT          0x33
+#define BMP388_EXPECTED_ID     0x50
 
 static int64_t calibrationTLin;
 
@@ -71,51 +72,14 @@ static uint32_t compensatePressure(BMP388_Calib_t const* calibration, uint32_t r
     partial_data3 = (int64_t)((int64_t)(partial_data2 * rawPressure) / 128);
     partial_data4 = (int64_t)((offset / 4) + partial_data1 + partial_data5 + partial_data3);
     return (uint32_t)(((uint64_t)partial_data4 * 25) / (uint64_t)1099511627776);
-//
-//    int64_t pd1, pd2, pd3, pd4, pd5, pd6;
-//    int64_t t_lin = calibrationTLin; // Podmieniona nazwa zmiennej
-//
-//    // 1. Obliczenie wpływu temperatury na czujnik (wielomian par_p9, p10, p11)
-//    pd1 = (t_lin * t_lin) >> 16;
-//    pd2 = (pd1 * (int64_t)calibration->P11) >> 16;
-//    pd3 = (t_lin * (int64_t)calibration->P10) >> 12;
-//    pd4 = ((int64_t)calibration->P9 << 18) + pd2 + pd3;
-//
-//    // 2. Korekcja nieliniowości (par_p5, p6, p7, p8)
-//    pd1 = (t_lin * t_lin) >> 16;
-//    pd2 = (pd1 * (int64_t)calibration->P8) >> 16;
-//    pd3 = (t_lin * (int64_t)calibration->P7) >> 12;
-//    pd5 = ((int64_t)calibration->P6 << 16) + pd2 + pd3;
-//    pd6 = ((pd5 * t_lin) >> 16) + ((int64_t)calibration->P5 << 19);
-//
-//    // 3. Skalowanie bazy czujnika (par_p1, p2, p3, p4)
-//    pd1 = (t_lin * (int64_t)calibration->P3) >> 12;
-//    pd2 = (pd1 + ((int64_t)calibration->P2 << 13)) * t_lin;
-//    pd3 = ((int64_t)calibration->P1 << 15) + (pd2 >> 20) + (((int64_t)calibration->P4 * pd1) >> 16);
-//
-//    // 4. Kompensacja surowego odczytu ciśnienia
-//    pd1 = ((int64_t)rawPressure * (pd4 >> 10)) >> 14;
-//    pd2 = ((int64_t)rawPressure * (int64_t)rawPressure) >> 16;
-//    pd5 = (pd2 * (pd6 >> 12)) >> 16;
-//
-//    int64_t denominator = pd3 + pd1;
-//    if (denominator == 0) return 0;
-//
-//    // Zastąpienie dzielenia przez zmienną szybkim mnożeniem przez odwrotność (stała 2^40)
-//    int64_t inv_denom = ((int64_t)1 << 40) / denominator;
-//    int64_t final_press = (((int64_t)1 << 31) - pd5) * inv_denom;
-//
-//    // Wynik w Paskalach (Pa)
-//    return (uint32_t)(final_press >> 9);
 }
-
 
 uint8_t bmp388Init(){
     uint8_t chipId = 0;
-    uint8_t result = FAILURE;
+    uint8_t result = ERROR;
     uint8_t data[1] = {BMP388_VAL_PT};
     readI2C(BMP388_ADDR, BMP388_REG_CHIP_ID, &chipId, 1);
-    result = (chipId == BMP388_EXPECTED_ID) ? SUCCESS : FAILURE;
+    result = (chipId == BMP388_EXPECTED_ID) ? SUCCESS : ERROR;
     if (result == SUCCESS)
     {
         writeI2C(BMP388_ADDR, BMP388_REG_PWR_CTRL, data, 1);

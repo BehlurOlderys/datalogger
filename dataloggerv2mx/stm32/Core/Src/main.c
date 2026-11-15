@@ -7,6 +7,7 @@
 /* USER CODE BEGIN Includes */
 #include "logger.h"
 #include "bmp388.h"
+#include "lsm6dso.h"
 #include "base.h"
 #include "mh_i2c.h"
 #include "mh_spi.h"
@@ -33,6 +34,7 @@ I2C_HandleTypeDef hi2c1;
 static int32_t currentPressure;    //x100
 static int16_t currentTemperature; //x100
 static BMP388_Calib_t bmp388Calibration;
+static int16_t rawXYZGyroAndAcc[6]; // gx, gy, gz, ax, ay, az
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -44,6 +46,7 @@ static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 static void bmp388MeasureAndDisplayOnce();
+static void lsm6dsoMeasureAndDisplayOnce();
 static void checkBMP388();
 static void checkLSM6DSO();
 static void checkMX25L32();
@@ -56,13 +59,44 @@ static void bmp388MeasureAndDisplayOnce()
     bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
     char tstring[5] = {0};
     char pstring[8] = {0};
-    intToAscii(currentTemperature, tstring, 4);
-    intToAscii(currentPressure, pstring, 7);
+    uintToAscii(currentTemperature, tstring, 4);
+    uintToAscii(currentPressure, pstring, 7);
     sendStringUart("T=");
     sendStringUart(tstring);
     sendStringUart(", P=");
     sendStringUart(pstring);
     sendStringUart("\r\n");
+}
+static void lsm6dsoMeasureAndDisplayOnce()
+{
+    lsm6dsoMeasure(rawXYZGyroAndAcc);
+    char gxstring[7] = {0};
+    char gystring[7] = {0};
+    char gzstring[7] = {0};
+    char axstring[7] = {0};
+    char aystring[7] = {0};
+    char azstring[7] = {0};
+
+    intToAscii(rawXYZGyroAndAcc[0], gxstring, 6);
+    intToAscii(rawXYZGyroAndAcc[1], gystring, 6);
+    intToAscii(rawXYZGyroAndAcc[2], gzstring, 6);
+    intToAscii(rawXYZGyroAndAcc[3], axstring, 6);
+    intToAscii(rawXYZGyroAndAcc[4], aystring, 6);
+    intToAscii(rawXYZGyroAndAcc[5], azstring, 6);
+
+    sendStringUart("G=(");
+    sendStringUart(gxstring);
+    sendStringUart(", ");
+    sendStringUart(gystring);
+    sendStringUart(", ");
+    sendStringUart(gzstring);
+    sendStringUart("), A=(");
+    sendStringUart(axstring);
+    sendStringUart(", ");
+    sendStringUart(aystring);
+    sendStringUart(", ");
+    sendStringUart(azstring);
+    sendStringUart(")\r\n");
 }
 static void checkBMP388()
 {
@@ -81,10 +115,7 @@ static void checkBMP388()
 }
 static void checkLSM6DSO()
 {
-    uint8_t chipId = 0;
-    uint8_t result = FAILURE;
-    readI2C(0xD6, 0x0F, &chipId, 1);
-    result = (chipId == 0x6A) ? SUCCESS : FAILURE;
+    uint8_t result = lsm6dsoInit();
     if (result == SUCCESS)
     {
         sendStringUart("LSM OK\r\n");
@@ -170,8 +201,9 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while(1)
   {
-      LL_mDelay(300);
+      LL_mDelay(1000);
       bmp388MeasureAndDisplayOnce();
+      lsm6dsoMeasureAndDisplayOnce();
   }
     /* USER CODE END WHILE */
 
