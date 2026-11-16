@@ -11,6 +11,7 @@
 #include "base.h"
 #include "mh_i2c.h"
 #include "mh_spi.h"
+#include "uart_defines.h"
 #include "stm32c0xx_ll_i2c.h"
 /* USER CODE END Includes */
 
@@ -20,6 +21,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MAIN_MODE_INITIAL       0x01
+#define MAIN_MODE_MEASUREMENT   0x11
+#define MAIN_MODE_COMMUNICATION 0xFC
+#define MAIN_MODE_UNDEFINED     0x00
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -35,6 +40,15 @@ static int32_t currentPressure;    //x100
 static int16_t currentTemperature; //x100
 static BMP388_Calib_t bmp388Calibration;
 static int16_t rawXYZGyroAndAcc[6]; // gx, gy, gz, ax, ay, az
+
+volatile uint8_t currentMode = MAIN_MODE_INITIAL;
+
+volatile uint8_t uartRxBuffer[RX_BUFFER_SIZE];
+volatile uint8_t uartRxIndex;
+volatile uint8_t bufReadPos = 0;
+volatile uint8_t bufWritePos = 0;
+
+volatile uint8_t changeModeToComm = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -50,6 +64,7 @@ static void lsm6dsoMeasureAndDisplayOnce();
 static void checkBMP388();
 static void checkLSM6DSO();
 static void checkMX25L32();
+static void handleUartRx();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -155,6 +170,18 @@ static void checkMX25L32(){
     }
     sendStringUart("\r\n");
 }
+
+void handleUartRx(){
+    bufWritePos = uartRxIndex;
+    char actual[2] = {0};
+    while (bufReadPos != bufWritePos){
+        actual[0] = uartRxBuffer[bufReadPos++];
+    }
+    sendStringUart("ACTUAL RX: ");
+    sendStringUart(actual);
+    sendStringUart("\r\n");
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -189,6 +216,21 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
+  /***************** BEGIN DMA UART  */
+  LL_DMA_ConfigAddresses(DMA1, LL_DMA_CHANNEL_1,
+//                         LL_USART_DMA_GetRegAddr(USART1, LL_USART_DMA_REG_DATA_RECEIVE),
+                         (uint32_t)(&(USART1->RDR)),
+                         (uint32_t)uartRxBuffer,
+                         LL_DMA_GetDataTransferDirection(DMA1, LL_DMA_CHANNEL_1));
+
+  LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, RX_BUFFER_SIZE);
+  LL_USART_EnableDMAReq_RX(USART1);
+  LL_USART_EnableIT_IDLE(USART1);
+  LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+  /***************** END DMA UART */
+
+
+
   LL_mDelay(10);
   sendStringUart("Hello, world!\r\n");
   checkBMP388();
@@ -204,6 +246,11 @@ int main(void)
       LL_mDelay(1000);
       bmp388MeasureAndDisplayOnce();
       lsm6dsoMeasureAndDisplayOnce();
+      if (changeModeToComm)
+      {
+          changeModeToComm = 0;
+          handleUartRx();
+      }
   }
     /* USER CODE END WHILE */
 
