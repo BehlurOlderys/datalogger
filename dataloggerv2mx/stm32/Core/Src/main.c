@@ -23,6 +23,9 @@
 /* USER CODE BEGIN PD */
 #define MAIN_MODE_INITIAL       0x01
 #define MAIN_MODE_MEASUREMENT   0x11
+#define MAIN_MODE_STORAGE       0xA7
+#define MAIN_MODE_UART_TXT      0xB4
+#define MAIN_MODE_UART_BIN      0xC8
 #define MAIN_MODE_COMMUNICATION 0xFC
 #define MAIN_MODE_UNDEFINED     0x00
 /* USER CODE END PD */
@@ -59,8 +62,9 @@ static void MX_USART1_UART_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-static void bmp388MeasureAndDisplayOnce();
-static void lsm6dsoMeasureAndDisplayOnce();
+static void logToUartTxt();
+static void logToUartBin();
+static void flashToUart();
 static void checkBMP388();
 static void checkLSM6DSO();
 static void checkMX25L32();
@@ -69,22 +73,9 @@ static void handleUartRx();
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void bmp388MeasureAndDisplayOnce()
+static void logToUartTxt()
 {
-    bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
-    char tstring[5] = {0};
-    char pstring[8] = {0};
-    uintToAscii(currentTemperature, tstring, 4);
-    uintToAscii(currentPressure, pstring, 7);
-    sendStringUart("T=");
-    sendStringUart(tstring);
-    sendStringUart(", P=");
-    sendStringUart(pstring);
-    sendStringUart("\r\n");
-}
-static void lsm6dsoMeasureAndDisplayOnce()
-{
-    lsm6dsoMeasure(rawXYZGyroAndAcc);
+    /********************************* LOG ACC + GYR *****************/
     char gxstring[7] = {0};
     char gystring[7] = {0};
     char gzstring[7] = {0};
@@ -112,14 +103,34 @@ static void lsm6dsoMeasureAndDisplayOnce()
     sendStringUart(", ");
     sendStringUart(azstring);
     sendStringUart(")\r\n");
+    /*********************************** LOG T and P **********/
+    char tstring[5] = {0};
+    char pstring[8] = {0};
+    uintToAscii(currentTemperature, tstring, 4);
+    uintToAscii(currentPressure, pstring, 7);
+    sendStringUart("T=");
+    sendStringUart(tstring);
+    sendStringUart(", P=");
+    sendStringUart(pstring);
+    sendStringUart("\r\n");
 }
+
+static void logToUartBin()
+{
+    // TODO!
+}
+
+static void flashToUart()
+{
+    // TODO!
+}
+
 static void checkBMP388()
 {
     if (bmp388Init() == SUCCESS)
     {
         bmp388ReadCoeffs(&bmp388Calibration);
         LL_mDelay(10);
-        bmp388MeasureAndDisplayOnce();
         sendStringUart("BMP OK\r\n");
     }
     else
@@ -180,6 +191,15 @@ void handleUartRx(){
     sendStringUart("ACTUAL RX: ");
     sendStringUart(actual);
     sendStringUart("\r\n");
+
+    if (actual[0] == 'U'){
+        currentMode = MAIN_MODE_UART_TXT;
+        sendStringUart("MODE=UART_TXT\r\n");
+    }
+    if (actual[0] == 'D'){
+        currentMode = MAIN_MODE_UNDEFINED;
+        sendStringUart("MODE=UNDEFINED\r\n");
+    }
 }
 
 /* USER CODE END 0 */
@@ -237,6 +257,7 @@ int main(void)
   checkLSM6DSO();
   checkMX25L32();
   sendStringUart("WHILE\r\n");
+  currentMode = MAIN_MODE_MEASUREMENT;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -244,8 +265,12 @@ int main(void)
   while(1)
   {
       LL_mDelay(1000);
-      bmp388MeasureAndDisplayOnce();
-      lsm6dsoMeasureAndDisplayOnce();
+      bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
+      lsm6dsoMeasure(rawXYZGyroAndAcc);
+      if (currentMode == MAIN_MODE_UART_TXT)
+      {
+          logToUartTxt();
+      }
       if (changeModeToComm)
       {
           changeModeToComm = 0;
