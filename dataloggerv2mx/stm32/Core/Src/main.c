@@ -13,10 +13,19 @@
 #include "mh_spi.h"
 #include "uart_defines.h"
 #include "stm32c0xx_ll_i2c.h"
+#include <assert.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef struct {
+    uint16_t deltaTime;
+    int16_t temperature;
+    int32_t pressure;
+    int16_t gyroAndAcc[6];
+} DataFrame_t;
+
+static_assert(sizeof(DataFrame_t) == 20, "DataFrame_t size mismatch!");
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -39,10 +48,11 @@
 I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN PV */
-static int32_t currentPressure;    //x100
-static int16_t currentTemperature; //x100
+static DataFrame_t current;
+//static int32_t currentPressure;    //x100
+//static int16_t currentTemperature; //x100
+//static int16_t rawXYZGyroAndAcc[6]; // gx, gy, gz, ax, ay, az
 static BMP388_Calib_t bmp388Calibration;
-static int16_t rawXYZGyroAndAcc[6]; // gx, gy, gz, ax, ay, az
 
 volatile uint8_t currentMode = MAIN_MODE_INITIAL;
 
@@ -50,7 +60,7 @@ volatile uint8_t uartRxBuffer[RX_BUFFER_SIZE];
 volatile uint8_t uartRxIndex;
 volatile uint8_t bufReadPos = 0;
 volatile uint8_t bufWritePos = 0;
-
+uint32_t lastTick = 0;
 volatile uint8_t changeModeToComm = 0;
 /* USER CODE END PV */
 
@@ -75,6 +85,12 @@ static void handleUartRx();
 /* USER CODE BEGIN 0 */
 static void logToUartTxt()
 {
+    /********************************* timestamp *********************/
+    char timestring[7] = {0};
+    uintToAscii(current.deltaTime, timestring, 6);
+    sendStringUart("[");
+    sendStringUart(timestring);
+    sendStringUart("] ");
     /********************************* LOG ACC + GYR *****************/
     char gxstring[7] = {0};
     char gystring[7] = {0};
@@ -83,12 +99,12 @@ static void logToUartTxt()
     char aystring[7] = {0};
     char azstring[7] = {0};
 
-    intToAscii(rawXYZGyroAndAcc[0], gxstring, 6);
-    intToAscii(rawXYZGyroAndAcc[1], gystring, 6);
-    intToAscii(rawXYZGyroAndAcc[2], gzstring, 6);
-    intToAscii(rawXYZGyroAndAcc[3], axstring, 6);
-    intToAscii(rawXYZGyroAndAcc[4], aystring, 6);
-    intToAscii(rawXYZGyroAndAcc[5], azstring, 6);
+    intToAscii(current.gyroAndAcc[0], gxstring, 6);
+    intToAscii(current.gyroAndAcc[1], gystring, 6);
+    intToAscii(current.gyroAndAcc[2], gzstring, 6);
+    intToAscii(current.gyroAndAcc[3], axstring, 6);
+    intToAscii(current.gyroAndAcc[4], aystring, 6);
+    intToAscii(current.gyroAndAcc[5], azstring, 6);
 
     sendStringUart("G=(");
     sendStringUart(gxstring);
@@ -102,12 +118,12 @@ static void logToUartTxt()
     sendStringUart(aystring);
     sendStringUart(", ");
     sendStringUart(azstring);
-    sendStringUart(")\r\n");
+    sendStringUart(") ");
     /*********************************** LOG T and P **********/
     char tstring[5] = {0};
     char pstring[8] = {0};
-    uintToAscii(currentTemperature, tstring, 4);
-    uintToAscii(currentPressure, pstring, 7);
+    uintToAscii(current.temperature, tstring, 4);
+    uintToAscii(current.pressure, pstring, 7);
     sendStringUart("T=");
     sendStringUart(tstring);
     sendStringUart(", P=");
@@ -117,7 +133,22 @@ static void logToUartTxt()
 
 static void logToUartBin()
 {
-    // TODO!
+    sendBytesUart((uint8_t*)&current, sizeof(DataFrame_t));
+    /* FOR NOW I DONT NEED DMA THAT MUCH BUT LETS HAVE IT: */
+//    if (LL_DMA_IsEnabledChannel(DMA1, LL_DMA_CHANNEL_2) && !LL_DMA_IsActiveFlag_TC2(DMA1)) {
+//        return;
+//    }
+//
+//    LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_2);
+//    LL_DMA_ClearFlag_TC2(DMA1);
+//
+//    LL_DMA_ConfigAddresses(DMA1, LL_DMA_CHANNEL_2,
+//                           (uint32_t)(&current),
+//                           (uint32_t)&(USART1->TDR),
+//                           LL_DMA_DIRECTION_MEMORY_TO_PERIPH);
+//
+//    LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_2, sizeof(DataFrame_t));
+//    LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_2);
 }
 
 static void flashToUart()
@@ -154,7 +185,7 @@ static void checkLSM6DSO()
 }
 
 static void checkMX25L32(){
-    char recvOut[4] = {0};
+    volatile char recvOut[4] = {0};
 
     LL_GPIO_ResetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
     readAndWrite1bSPI(0x9F); // JEDEC ID
@@ -195,6 +226,10 @@ void handleUartRx(){
     if (actual[0] == 'U'){
         currentMode = MAIN_MODE_UART_TXT;
         sendStringUart("MODE=UART_TXT\r\n");
+    }
+    if (actual[0] == 'B'){
+        currentMode = MAIN_MODE_UART_BIN;
+        sendStringUart("MODE=UART_BIN\r\n");
     }
     if (actual[0] == 'D'){
         currentMode = MAIN_MODE_UNDEFINED;
@@ -247,6 +282,10 @@ int main(void)
   LL_USART_EnableDMAReq_RX(USART1);
   LL_USART_EnableIT_IDLE(USART1);
   LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
+  // Second channel for TX:
+  LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_2, (uint32_t)&(USART1->TDR));
+  LL_USART_EnableDMAReq_TX(USART1);
   /***************** END DMA UART */
 
 
@@ -257,6 +296,7 @@ int main(void)
   checkLSM6DSO();
   checkMX25L32();
   sendStringUart("WHILE\r\n");
+  lastTick = uwTick;
   currentMode = MAIN_MODE_MEASUREMENT;
   /* USER CODE END 2 */
 
@@ -264,12 +304,17 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while(1)
   {
-      LL_mDelay(1000);
-      bmp388Measure(&bmp388Calibration, &currentPressure, &currentTemperature);
-      lsm6dsoMeasure(rawXYZGyroAndAcc);
+      LL_mDelay(992);
+      current.deltaTime = (uint16_t)(uwTick-lastTick);
+      bmp388Measure(&bmp388Calibration, &(current.pressure), &(current.temperature));
+      lsm6dsoMeasure(current.gyroAndAcc);
       if (currentMode == MAIN_MODE_UART_TXT)
       {
           logToUartTxt();
+      }
+      else if (currentMode == MAIN_MODE_UART_BIN)
+      {
+          logToUartBin();
       }
       if (changeModeToComm)
       {
@@ -502,6 +547,23 @@ static void MX_USART1_UART_Init(void)
 
   LL_DMA_SetMemorySize(DMA1, LL_DMA_CHANNEL_1, LL_DMA_MDATAALIGN_BYTE);
 
+  /* USART1_TX Init */
+  LL_DMA_SetPeriphRequest(DMA1, LL_DMA_CHANNEL_2, LL_DMAMUX_REQ_USART1_TX);
+
+  LL_DMA_SetDataTransferDirection(DMA1, LL_DMA_CHANNEL_2, LL_DMA_DIRECTION_MEMORY_TO_PERIPH);
+
+  LL_DMA_SetChannelPriorityLevel(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PRIORITY_LOW);
+
+  LL_DMA_SetMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MODE_NORMAL);
+
+  LL_DMA_SetPeriphIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PERIPH_NOINCREMENT);
+
+  LL_DMA_SetMemoryIncMode(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MEMORY_INCREMENT);
+
+  LL_DMA_SetPeriphSize(DMA1, LL_DMA_CHANNEL_2, LL_DMA_PDATAALIGN_BYTE);
+
+  LL_DMA_SetMemorySize(DMA1, LL_DMA_CHANNEL_2, LL_DMA_MDATAALIGN_BYTE);
+
   /* USART1 interrupt Init */
   NVIC_SetPriority(USART1_IRQn, 0);
   NVIC_EnableIRQ(USART1_IRQn);
@@ -535,7 +597,6 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE END USART1_Init 2 */
 
 }
-
 /**
   * Enable DMA controller clock
   */
@@ -550,6 +611,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   NVIC_SetPriority(DMA1_Channel1_IRQn, 0);
   NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel2_3_IRQn interrupt configuration */
+  NVIC_SetPriority(DMA1_Channel2_3_IRQn, 0);
+  NVIC_EnableIRQ(DMA1_Channel2_3_IRQn);
 
 }
 

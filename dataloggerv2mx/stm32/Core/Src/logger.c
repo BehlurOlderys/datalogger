@@ -15,3 +15,11 @@ void sendStringUart(char *str) {
         LL_USART_TransmitData8(USART1, *str++);
     }
 }
+
+void sendBytesUart(const void *data, uint16_t len) {
+    const uint8_t *p = (const uint8_t *)data;
+    while (len--) {
+        while (!LL_USART_IsActiveFlag_TXE(USART1)) {}
+        LL_USART_TransmitData8(USART1, *p++);
+    }
+}

@@ -156,12 +156,26 @@ void DMA1_Channel1_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles DMA1 channel 2 and channel 3 interrupts.
+  */
+void DMA1_Channel2_3_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA1_Channel2_3_IRQn 0 */
+
+  /* USER CODE END DMA1_Channel2_3_IRQn 0 */
+  /* USER CODE BEGIN DMA1_Channel2_3_IRQn 1 */
+
+  /* USER CODE END DMA1_Channel2_3_IRQn 1 */
+}
+
+/**
   * @brief This function handles USART1 interrupt.
   */
 void USART1_IRQHandler(void)
 {
-    static uint32_t maxSize = RX_BUFFER_SIZE;
   /* USER CODE BEGIN USART1_IRQn 0 */
+    static uint32_t maxSize = RX_BUFFER_SIZE;
+
     if (LL_USART_IsActiveFlag_IDLE(USART1) && LL_USART_IsEnabledIT_IDLE(USART1))
     {
         LL_USART_ClearFlag_IDLE(USART1);

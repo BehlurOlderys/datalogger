@@ -1,0 +1,4 @@
+com.googlecode.cppcheclipse.ui.SettingsPreferencePage_useParentScope=false
+eclipse.preferences.version=1
+languageStandardC=c99
+misrac12=true

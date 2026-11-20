@@ -12,5 +12,5 @@
 #include <stm32c0xx_ll_usart.h>
 
 void sendStringUart(char *str);
-
+void sendBytesUart(const void *data, uint16_t len);
 #endif /* INC_LOGGER_H_ */
