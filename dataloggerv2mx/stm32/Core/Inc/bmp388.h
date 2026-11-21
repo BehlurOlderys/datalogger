@@ -9,6 +9,7 @@
 #define INC_BMP388_H_
 
 #include <stdint.h>
+#include "stm32c0xx.h"
 
 typedef struct __attribute__((packed)) {
     uint16_t T1;
@@ -27,7 +28,7 @@ typedef struct __attribute__((packed)) {
     int8_t   P11;
 } BMP388_Calib_t;
 
-uint8_t bmp388Init      ();
+ErrorStatus bmp388Init      ();
 void    bmp388ReadCoeffs(BMP388_Calib_t* calibration);
 void    bmp388Measure   (BMP388_Calib_t const* calibration, int32_t* pressure, int16_t* temp);
 

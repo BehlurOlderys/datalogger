@@ -74,9 +74,9 @@ static uint32_t compensatePressure(BMP388_Calib_t const* calibration, uint32_t r
     return (uint32_t)(((uint64_t)partial_data4 * 25) / (uint64_t)1099511627776);
 }
 
-uint8_t bmp388Init(){
+ErrorStatus bmp388Init(){
     uint8_t chipId = 0;
-    uint8_t result = ERROR;
+    ErrorStatus result = ERROR;
     uint8_t data[1] = {BMP388_VAL_PT};
     readI2C(BMP388_ADDR, BMP388_REG_CHIP_ID, &chipId, 1);
     result = (chipId == BMP388_EXPECTED_ID) ? SUCCESS : ERROR;

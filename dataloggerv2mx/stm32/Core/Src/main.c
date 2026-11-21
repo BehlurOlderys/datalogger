@@ -6,6 +6,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "logger.h"
+#include "data_structures.h"
 #include "bmp388.h"
 #include "lsm6dso.h"
 #include "base.h"
@@ -14,29 +15,30 @@
 #include "uart_defines.h"
 #include "stm32c0xx_ll_i2c.h"
 #include <assert.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef struct {
-    uint16_t deltaTime;
-    int16_t temperature;
-    int32_t pressure;
-    int16_t gyroAndAcc[6];
-} DataFrame_t;
 
 static_assert(sizeof(DataFrame_t) == 20, "DataFrame_t size mismatch!");
+static_assert(sizeof(FlashPage_t) == 256, "FlashPage_t size mismatch!");
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MAIN_MODE_INITIAL       0x01
-#define MAIN_MODE_MEASUREMENT   0x11
-#define MAIN_MODE_STORAGE       0xA7
-#define MAIN_MODE_UART_TXT      0xB4
-#define MAIN_MODE_UART_BIN      0xC8
-#define MAIN_MODE_COMMUNICATION 0xFC
-#define MAIN_MODE_UNDEFINED     0x00
+typedef enum
+{
+    MAIN_MODE_INITIAL       = 0x01,
+    MAIN_MODE_MEASUREMENT   = 0x11,
+    MAIN_MODE_STORAGE       = 0xA7,
+    MAIN_MODE_ERROR         = 0xCC,
+    MAIN_MODE_UART_TXT      = 0xB4,
+    MAIN_MODE_UART_BIN      = 0xC8,
+    MAIN_MODE_COMMUNICATION = 0xFC,
+    MAIN_MODE_UNDEFINED     = 0x00
+} MainMode;
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -48,19 +50,21 @@ static_assert(sizeof(DataFrame_t) == 20, "DataFrame_t size mismatch!");
 I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN PV */
-static DataFrame_t current;
+static DataFrame_t* currentFrame;
 //static int32_t currentPressure;    //x100
 //static int16_t currentTemperature; //x100
 //static int16_t rawXYZGyroAndAcc[6]; // gx, gy, gz, ax, ay, az
 static BMP388_Calib_t bmp388Calibration;
 
-volatile uint8_t currentMode = MAIN_MODE_INITIAL;
-
+volatile MainMode currentMode = MAIN_MODE_INITIAL;
+FlashPage_t flashPage;
+GetNewFrameStatus lastAddNewFrame = GET_NEW_FRAME_UNDEFINED;
 volatile uint8_t uartRxBuffer[RX_BUFFER_SIZE];
 volatile uint8_t uartRxIndex;
 volatile uint8_t bufReadPos = 0;
 volatile uint8_t bufWritePos = 0;
 uint32_t lastTick = 0;
+uint32_t currentPageIndex = 0; // TODO: not written anywhere so far
 volatile uint8_t changeModeToComm = 0;
 /* USER CODE END PV */
 
@@ -72,7 +76,8 @@ static void MX_USART1_UART_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-static void logToUartTxt();
+static void logFrameToUartTxt(DataFrame_t* frame);
+static void logPageToUartTxt();
 static void logToUartBin();
 static void flashToUart();
 static void checkBMP388();
@@ -83,11 +88,11 @@ static void handleUartRx();
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void logToUartTxt()
+static void logFrameToUartTxt(DataFrame_t* frame)
 {
     /********************************* timestamp *********************/
     char timestring[7] = {0};
-    uintToAscii(current.deltaTime, timestring, 6);
+    uintToAscii(frame->deltaTime, timestring, 6);
     sendStringUart("[");
     sendStringUart(timestring);
     sendStringUart("] ");
@@ -99,12 +104,12 @@ static void logToUartTxt()
     char aystring[7] = {0};
     char azstring[7] = {0};
 
-    intToAscii(current.gyroAndAcc[0], gxstring, 6);
-    intToAscii(current.gyroAndAcc[1], gystring, 6);
-    intToAscii(current.gyroAndAcc[2], gzstring, 6);
-    intToAscii(current.gyroAndAcc[3], axstring, 6);
-    intToAscii(current.gyroAndAcc[4], aystring, 6);
-    intToAscii(current.gyroAndAcc[5], azstring, 6);
+    intToAscii(frame->gyroAndAcc[0], gxstring, 6);
+    intToAscii(frame->gyroAndAcc[1], gystring, 6);
+    intToAscii(frame->gyroAndAcc[2], gzstring, 6);
+    intToAscii(frame->gyroAndAcc[3], axstring, 6);
+    intToAscii(frame->gyroAndAcc[4], aystring, 6);
+    intToAscii(frame->gyroAndAcc[5], azstring, 6);
 
     sendStringUart("G=(");
     sendStringUart(gxstring);
@@ -122,8 +127,8 @@ static void logToUartTxt()
     /*********************************** LOG T and P **********/
     char tstring[5] = {0};
     char pstring[8] = {0};
-    uintToAscii(current.temperature, tstring, 4);
-    uintToAscii(current.pressure, pstring, 7);
+    uintToAscii(frame->temperature, tstring, 4);
+    uintToAscii(frame->pressure, pstring, 7);
     sendStringUart("T=");
     sendStringUart(tstring);
     sendStringUart(", P=");
@@ -131,9 +136,59 @@ static void logToUartTxt()
     sendStringUart("\r\n");
 }
 
+static void logPageToUartTxt()
+{
+    if (lastAddNewFrame != GET_NEW_FRAME_FULL)
+    {
+        sendStringUart(".");
+        return;
+    }
+    char stringFor8[4] = {0};
+    char stringFor32[8] = {0};
+    sendStringUart("\r\n***SOP***\r\n");
+//    uint32_t magicNumber;
+//    uint32_t timestamp;
+//    uint32_t pageIndex;
+//    uint16_t nextFrameIndex;
+//    uint16_t crc16;
+    uintToAscii(flashPage.header.magicNumber, stringFor32, 7);
+    sendStringUart("MN=");
+    sendStringUart(stringFor32);
+    memset(stringFor32, 0, 8);
+    sendStringUart(", TS=");
+    uintToAscii(flashPage.header.timestamp, stringFor32, 7);
+    sendStringUart(stringFor32);
+    memset(stringFor32, 0, 8);
+    sendStringUart(", PI=");
+    uintToAscii(flashPage.header.pageIndex, stringFor32, 7);
+    sendStringUart(stringFor32);
+    memset(stringFor32, 0, 8);
+    sendStringUart(", NF=");
+    uintToAscii(flashPage.header.nextFrameIndex, stringFor32, 7);
+    sendStringUart(stringFor32);
+    memset(stringFor32, 0, 8);
+    sendStringUart(", CRC=");
+    uintToAscii(flashPage.header.crc16, stringFor32, 7);
+    sendStringUart(stringFor32);
+    memset(stringFor32, 0, 8);
+    sendStringUart(", DATA:\r\n");
+
+    uintToAscii(flashPage.header.magicNumber, stringFor32, 7);
+
+    for (uint8_t i=0; i < MAX_NUMBER_OF_FRAMES; ++i)
+    {
+        uintToAscii(i, stringFor8, 3);
+        sendStringUart("I=");
+        sendStringUart(stringFor8);
+        sendStringUart(": ");
+        logFrameToUartTxt(&(flashPage.frames[i]));
+    }
+    sendStringUart("***EOP***\r\n");
+}
+
 static void logToUartBin()
 {
-    sendBytesUart((uint8_t*)&current, sizeof(DataFrame_t));
+//    if ()
     /* FOR NOW I DONT NEED DMA THAT MUCH BUT LETS HAVE IT: */
 //    if (LL_DMA_IsEnabledChannel(DMA1, LL_DMA_CHANNEL_2) && !LL_DMA_IsActiveFlag_TC2(DMA1)) {
 //        return;
@@ -227,11 +282,11 @@ void handleUartRx(){
         currentMode = MAIN_MODE_UART_TXT;
         sendStringUart("MODE=UART_TXT\r\n");
     }
-    if (actual[0] == 'B'){
+    else if (actual[0] == 'B'){
         currentMode = MAIN_MODE_UART_BIN;
         sendStringUart("MODE=UART_BIN\r\n");
     }
-    if (actual[0] == 'D'){
+    else if (actual[0] == 'D'){
         currentMode = MAIN_MODE_UNDEFINED;
         sendStringUart("MODE=UNDEFINED\r\n");
     }
@@ -297,24 +352,52 @@ int main(void)
   checkMX25L32();
   sendStringUart("WHILE\r\n");
   lastTick = uwTick;
-  currentMode = MAIN_MODE_MEASUREMENT;
+  if (startNewPage(uwTick, currentPageIndex++, &flashPage) != SUCCESS)
+  {
+      currentMode = MAIN_MODE_ERROR;
+  }
+  else {
+      currentMode = MAIN_MODE_MEASUREMENT;
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while(1)
   {
-      LL_mDelay(992);
-      current.deltaTime = (uint16_t)(uwTick-lastTick);
-      bmp388Measure(&bmp388Calibration, &(current.pressure), &(current.temperature));
-      lsm6dsoMeasure(current.gyroAndAcc);
+      LL_mDelay(40);
+      if (lastAddNewFrame == GET_NEW_FRAME_FULL)
+      {
+          if (startNewPage(uwTick, currentPageIndex++, &flashPage) != SUCCESS)
+          {
+              currentMode = MAIN_MODE_ERROR;
+          }
+      }
+      lastAddNewFrame = addNewFrame(&flashPage, uwTick, &currentFrame);
+      if (lastAddNewFrame != GET_NEW_FRAME_ERROR)
+      {
+          bmp388Measure(&bmp388Calibration, &(currentFrame->pressure), &(currentFrame->temperature));
+          lsm6dsoMeasure(currentFrame->gyroAndAcc);
+          if (lastAddNewFrame == GET_NEW_FRAME_FULL)
+          {
+              addCrc16(&flashPage);
+          }
+      }
+      else {
+          currentMode = MAIN_MODE_ERROR;
+      }
+      /************* MODE HANDLING: ***********************/
       if (currentMode == MAIN_MODE_UART_TXT)
       {
-          logToUartTxt();
+          logPageToUartTxt();
       }
       else if (currentMode == MAIN_MODE_UART_BIN)
       {
           logToUartBin();
+      }
+      else if (currentMode == MAIN_MODE_ERROR)
+      {
+          while(1){ __WFI(); };
       }
       if (changeModeToComm)
       {
@@ -571,7 +654,7 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 1 */
   /* USER CODE END USART1_Init 1 */
   USART_InitStruct.PrescalerValue = LL_USART_PRESCALER_DIV1;
-  USART_InitStruct.BaudRate = 115200;
+  USART_InitStruct.BaudRate = 921600;
   USART_InitStruct.DataWidth = LL_USART_DATAWIDTH_8B;
   USART_InitStruct.StopBits = LL_USART_STOPBITS_1;
   USART_InitStruct.Parity = LL_USART_PARITY_NONE;
@@ -597,6 +680,7 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE END USART1_Init 2 */
 
 }
+
 /**
   * Enable DMA controller clock
   */
