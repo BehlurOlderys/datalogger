@@ -9,9 +9,8 @@
 #include "data_structures.h"
 #include "bmp388.h"
 #include "lsm6dso.h"
+#include "mx25l32.h"
 #include "base.h"
-#include "mh_i2c.h"
-#include "mh_spi.h"
 #include "uart_defines.h"
 #include "stm32c0xx_ll_i2c.h"
 #include <assert.h>
@@ -27,6 +26,10 @@ static_assert(sizeof(FlashPage_t) == 256, "FlashPage_t size mismatch!");
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define DELAY_MS_SLOW 200
+#define DELAY_MS_FAST 40
+
 typedef enum
 {
     MAIN_MODE_INITIAL       = 0x01,
@@ -57,6 +60,7 @@ static DataFrame_t* currentFrame;
 static BMP388_Calib_t bmp388Calibration;
 
 volatile MainMode currentMode = MAIN_MODE_INITIAL;
+volatile uint16_t currentDelay = DELAY_MS_SLOW;
 FlashPage_t flashPage;
 GetNewFrameStatus lastAddNewFrame = GET_NEW_FRAME_UNDEFINED;
 volatile uint8_t uartRxBuffer[RX_BUFFER_SIZE];
@@ -188,6 +192,11 @@ static void logPageToUartTxt()
 
 static void logToUartBin()
 {
+    if (lastAddNewFrame != GET_NEW_FRAME_FULL)
+    {
+        return;
+    }
+    sendBytesUart((uint8_t*)(&flashPage), sizeof(FlashPage_t));
 //    if ()
     /* FOR NOW I DONT NEED DMA THAT MUCH BUT LETS HAVE IT: */
 //    if (LL_DMA_IsEnabledChannel(DMA1, LL_DMA_CHANNEL_2) && !LL_DMA_IsActiveFlag_TC2(DMA1)) {
@@ -240,20 +249,21 @@ static void checkLSM6DSO()
 }
 
 static void checkMX25L32(){
-    volatile char recvOut[4] = {0};
-
-    LL_GPIO_ResetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
-    readAndWrite1bSPI(0x9F); // JEDEC ID
-    recvOut[0] = readAndWrite1bSPI(0xFF);
-    recvOut[1] = readAndWrite1bSPI(0xFF);
-    recvOut[2] = readAndWrite1bSPI(0xFF);
-    while (LL_SPI_IsActiveFlag_BSY(SPI1));
-    LL_GPIO_SetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
-
-    const uint8_t status = // For MX25L32
-            (recvOut[0] != 0xC2) ||
-            (recvOut[1] != 0x20) ||
-            (recvOut[2] != 0x16);
+    ErrorStatus status = mx25l32Init();
+//    volatile char recvOut[4] = {0};
+//
+//    LL_GPIO_ResetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
+//    readAndWrite1bSPI(0x9F); // JEDEC ID
+//    recvOut[0] = readAndWrite1bSPI(0xFF);
+//    recvOut[1] = readAndWrite1bSPI(0xFF);
+//    recvOut[2] = readAndWrite1bSPI(0xFF);
+//    while (LL_SPI_IsActiveFlag_BSY(SPI1));
+//    LL_GPIO_SetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
+//
+//    const uint8_t status = // For MX25L32
+//            (recvOut[0] != 0xC2) ||
+//            (recvOut[1] != 0x20) ||
+//            (recvOut[2] != 0x16);
 
     sendStringUart("MX25L32: ");
     if (status == SUCCESS)
@@ -274,9 +284,9 @@ void handleUartRx(){
     while (bufReadPos != bufWritePos){
         actual[0] = uartRxBuffer[bufReadPos++];
     }
-    sendStringUart("ACTUAL RX: ");
-    sendStringUart(actual);
-    sendStringUart("\r\n");
+//    sendStringUart("ACTUAL RX: ");
+//    sendStringUart(actual);
+//    sendStringUart("\r\n");
 
     if (actual[0] == 'U'){
         currentMode = MAIN_MODE_UART_TXT;
@@ -289,6 +299,17 @@ void handleUartRx(){
     else if (actual[0] == 'D'){
         currentMode = MAIN_MODE_UNDEFINED;
         sendStringUart("MODE=UNDEFINED\r\n");
+    }
+    else if (actual[0] == 'F')
+    {
+        currentDelay = DELAY_MS_FAST;
+    }
+    else if (actual[0] == 'S')
+    {
+        currentDelay = DELAY_MS_SLOW;
+    }
+    else if (actual[0] == 'A'){
+        sendStringUart("ACK\r\n");
     }
 }
 
@@ -365,7 +386,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while(1)
   {
-      LL_mDelay(40);
+      LL_mDelay(currentDelay);
       if (lastAddNewFrame == GET_NEW_FRAME_FULL)
       {
           if (startNewPage(uwTick, currentPageIndex++, &flashPage) != SUCCESS)
