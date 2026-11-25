@@ -86,12 +86,10 @@ static void logFrameToUartTxt(DataFrame_t* frame);
 static void logPageToUartTxt();
 static void logToUartBin();
 static void flashToUart();
-static void checkBMP388();
-static void checkLSM6DSO();
-static void checkMX25L32();
 static void handleUartRx();
 static void tryChangingMeasurementMode(MeasurementMode newMode, uint16_t delay);
 static void tryPerformingMeasurement();
+static void handleFlashReading();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -154,11 +152,6 @@ static void logPageToUartTxt()
     char stringFor8[4] = {0};
     char stringFor32[8] = {0};
     sendStringUart("\r\n***SOP***\r\n");
-//    uint32_t magicNumber;
-//    uint32_t timestamp;
-//    uint32_t pageIndex;
-//    uint16_t nextFrameIndex;
-//    uint16_t crc16;
     uintToAscii(flashPage.header.magicNumber, stringFor32, 7);
     sendStringUart("MN=");
     sendStringUart(stringFor32);
@@ -200,6 +193,14 @@ static void logToUartBin()
     {
         return;
     }
+    if (0 != flashPage.header.crc16)
+    {
+        return;
+    }
+    if (SUCCESS != addCrc16(&flashPage))
+    {
+        return;
+    }
     sendBytesUart((uint8_t*)(&flashPage), sizeof(FlashPage_t));
 //    if ()
     /* FOR NOW I DONT NEED DMA THAT MUCH BUT LETS HAVE IT: */
@@ -224,106 +225,55 @@ static void flashToUart()
     // TODO!
 }
 
-static void checkBMP388()
-{
-    if (bmp388Init() == SUCCESS)
-    {
-        bmp388ReadCoeffs(&bmp388Calibration);
-        LL_mDelay(10);
-        sendStringUart("BMP OK\r\n");
-    }
-    else
-    {
-        sendStringUart("BMP FAIL\r\n");
-        while(1){ __WFI(); }
-    }
-}
-static void checkLSM6DSO()
-{
-    uint8_t result = lsm6dsoInit();
-    if (result == SUCCESS)
-    {
-        sendStringUart("LSM OK\r\n");
-    }
-    else
-    {
-        sendStringUart("LSM FAIL\r\n");
-        while(1){ __WFI(); }
-    }
-}
-
-static void checkMX25L32(){
-    ErrorStatus status = mx25l32Init();
-//    volatile char recvOut[4] = {0};
-//
-//    LL_GPIO_ResetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
-//    readAndWrite1bSPI(0x9F); // JEDEC ID
-//    recvOut[0] = readAndWrite1bSPI(0xFF);
-//    recvOut[1] = readAndWrite1bSPI(0xFF);
-//    recvOut[2] = readAndWrite1bSPI(0xFF);
-//    while (LL_SPI_IsActiveFlag_BSY(SPI1));
-//    LL_GPIO_SetOutputPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin);
-//
-//    const uint8_t status = // For MX25L32
-//            (recvOut[0] != 0xC2) ||
-//            (recvOut[1] != 0x20) ||
-//            (recvOut[2] != 0x16);
-
-    sendStringUart("MX25L32: ");
-    if (status == SUCCESS)
-    {
-        sendStringUart("OK");
-    }
-    else
-    {
-        sendStringUart("FAIL");
-        while(1){ __WFI(); }
-    }
-    sendStringUart("\r\n");
-}
-
 void handleUartRx(){
+    // MAIN MODE: I=IDLE, T=UART_TXT, B=UART_BIN, S=STORAGE (to flash)
+    // COMM:      O=OFF, D=DEBUG, L=SLOW, F=FAST
+    // MISC:      A=ACK
     bufWritePos = uartRxIndex;
     char actual[2] = {0};
 
     while (bufReadPos != bufWritePos){
         actual[0] = uartRxBuffer[bufReadPos++];
     }
-    if (actual[0] == 'I'){
+    switch (actual[0]){
+    case 'I':
         mainMode = MAIN_MODE_IDLE;
         sendStringUart("MODE=IDLE\r\n");
-    }
-    else if (actual[0] == 'T'){
+        break;
+    case'T':
         mainMode = MAIN_MODE_UART_TXT;
         sendStringUart("MODE=UART_TXT\r\n");
-    }
-    else if (actual[0] == 'B'){
+        break;
+    case'B':
         mainMode = MAIN_MODE_UART_BIN;
         sendStringUart("MODE=UART_BIN\r\n");
-    }
-    else if (actual[0] == 'S'){
+        break;
+    case 'S':
         mainMode = MAIN_MODE_STORAGE;
         sendStringUart("MODE=STORE\r\n");
-    }
-    else if (actual[0] == 'O')
-    {
+        break;
+    case 'R':
+        mainMode = MAIN_MODE_READ_FLASH;
+        sendStringUart("MODE=READ\r\n");
+        break;
+    case 'O':
         tryChangingMeasurementMode(MEAS_MODE_OFF, DELAY_MS_DEBUG);
-    }
-    else if (actual[0] == 'D')
-    {
+        break;
+    case 'D':
         tryChangingMeasurementMode(MEAS_MODE_DEBUG, DELAY_MS_DEBUG);
-    }
-    else if (actual[0] == 'L')
-    {
+        break;
+    case 'L':
         tryChangingMeasurementMode(MEAS_MODE_SLOW, DELAY_MS_SLOW);
-    }
-    else if (actual[0] == 'F')
-    {
+        break;
+    case 'F':
         // TODO: currentDelay = DELAY_MS_FAST, but dunno what's that yet
         tryChangingMeasurementMode(MEAS_MODE_FAST, DELAY_MS_SLOW);
-    }
-    else if (actual[0] == 'A'){
+        break;
+    case 'A':
         sendStringUart("ACK\r\n");
+        break;
+    default:
+        __NOP();
     }
     if (mainMode == MAIN_MODE_COMMUNICATION)
     {
@@ -333,25 +283,21 @@ void handleUartRx(){
 
 void tryChangingMeasurementMode(MeasurementMode newMode, uint16_t delay)
 {
-    if (((measurementMode & MEAS_MODE_ANY_ON) == 0) &&
-        ((newMode & MEAS_MODE_ANY_ON) != 0))
-    {
-        lastTick = uwTick;
-        if (startNewPage(uwTick, nextPageIndex++, &flashPage) != SUCCESS)
+    do {
+        if (((measurementMode & MEAS_MODE_ANY_ON) == 0) &&
+            ((newMode & MEAS_MODE_ANY_ON) != 0))
         {
-            mainMode = MAIN_MODE_ERROR;
-            measurementMode = MEAS_MODE_OFF;
+            lastTick = uwTick;
+            if (startNewPage(uwTick, nextPageIndex++, &flashPage) != SUCCESS)
+            {
+                mainMode = MAIN_MODE_ERROR;
+                measurementMode = MEAS_MODE_OFF;
+                break;
+            }
         }
-        else
-        {
-            measurementMode = newMode;
-            currentDelay = delay;
-        }
-    }
-    else {
         measurementMode = newMode;
         currentDelay = delay;
-    }
+    } while(0);
 }
 
 static void tryPerformingMeasurement()
@@ -378,6 +324,14 @@ static void tryPerformingMeasurement()
             lsm6dsoMeasure(currentFrame->gyroAndAcc);
         }
     } while(0);
+}
+
+static void handleFlashReading()
+{
+    measurementMode = MEAS_MODE_OFF;
+    // TODO: read from actual flash. Now just send some rubbish:
+    sendBytesUart((void*)0x20000000, 1024);
+    mainMode = MAIN_MODE_IDLE;
 }
 
 /* USER CODE END 0 */
@@ -409,6 +363,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
+  LL_mDelay(10);
   MX_USART1_UART_Init();
   MX_SPI1_Init();
   MX_I2C1_Init();
@@ -423,6 +378,7 @@ int main(void)
 
   LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, RX_BUFFER_SIZE);
   LL_USART_EnableDMAReq_RX(USART1);
+  LL_USART_ClearFlag_IDLE(USART1);
   LL_USART_EnableIT_IDLE(USART1);
   LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
 
@@ -431,15 +387,26 @@ int main(void)
   LL_USART_EnableDMAReq_TX(USART1);
   /***************** END DMA UART */
 
-
-
   LL_mDelay(10);
-  sendStringUart("Hello, world!\r\n");
-  checkBMP388();
-  checkLSM6DSO();
-  checkMX25L32();
-  sendStringUart("WHILE\r\n");
+  sendStringUart("Config done, initializing devices...\r\n");
+  if (MAIN_MODE_INITIAL == mainMode && SUCCESS != bmp388Init(&bmp388Calibration))
+  {
+      mainMode = MAIN_MODE_ERROR;
+      sendStringUart("BMP388 failed!\r\n");
+  }
+  if (MAIN_MODE_INITIAL == mainMode && SUCCESS != lsm6dsoInit())
+  {
+      mainMode = MAIN_MODE_ERROR;
+      sendStringUart("LSM failed!\r\n");
+  }
+  if (MAIN_MODE_INITIAL == mainMode && SUCCESS != mx25l32Init())
+  {
+      mainMode = MAIN_MODE_ERROR;
+      sendStringUart("MX25 failed!\r\n");
+  }
   mainMode = MAIN_MODE_IDLE;
+  sendStringUart("Devices initialized, running main loop...\r\n");
+  LL_mDelay(10);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -463,6 +430,14 @@ int main(void)
       else if (mainMode == MAIN_MODE_UART_TXT)
       {
           logPageToUartTxt();
+      }
+      else if (mainMode == MAIN_MODE_UART_BIN)
+      {
+          logToUartBin();
+      }
+      else if (mainMode == MAIN_MODE_READ_FLASH)
+      {
+          handleFlashReading();
       }
       else if (mainMode == MAIN_MODE_COMMUNICATION)
       {

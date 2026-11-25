@@ -15,6 +15,26 @@
 
 static int64_t calibrationTLin;
 
+static void bmp388ReadCoeffs(BMP388_Calib_t* calibration){
+    uint8_t rawData[21];
+    readI2C(BMP388_ADDR, BMP388_REG_COEFF, rawData, 21);
+
+    calibration->T1 = (uint16_t)((rawData[1] << 8) | rawData[0]);
+    calibration->T2 = (uint16_t)((rawData[3] << 8) | rawData[2]);
+    calibration->T3 = (int8_t)rawData[4];
+    calibration->P1 = (int16_t)((rawData[6] << 8) | rawData[5]);
+    calibration->P2 = (int16_t)((rawData[8] << 8) | rawData[7]);
+    calibration->P3 = (int8_t)rawData[9];
+    calibration->P4 = (int8_t)rawData[10];
+    calibration->P5 = (uint16_t)((rawData[12] << 8) | rawData[11]);
+    calibration->P6 = (uint16_t)((rawData[14] << 8) | rawData[13]);
+    calibration->P7 = (int8_t)rawData[15];
+    calibration->P8 = (int8_t)rawData[16];
+    calibration->P9 = (int16_t)((rawData[18] << 8) | rawData[17]);
+    calibration->P10 = (int8_t)rawData[19];
+    calibration->P11 = (int8_t)rawData[20];
+}
+
 static int32_t compensateTemperature(BMP388_Calib_t const* calibration, uint32_t raw_temp)
 {
 
@@ -74,7 +94,7 @@ static uint32_t compensatePressure(BMP388_Calib_t const* calibration, uint32_t r
     return (uint32_t)(((uint64_t)partial_data4 * 25) / (uint64_t)1099511627776);
 }
 
-ErrorStatus bmp388Init(){
+ErrorStatus bmp388Init(BMP388_Calib_t* calibration){
     uint8_t chipId = 0;
     ErrorStatus result = ERROR;
     uint8_t data[1] = {BMP388_VAL_PT};
@@ -83,28 +103,10 @@ ErrorStatus bmp388Init(){
     if (result == SUCCESS)
     {
         writeI2C(BMP388_ADDR, BMP388_REG_PWR_CTRL, data, 1);
+        bmp388ReadCoeffs(calibration);
     }
+
     return result;
-}
-
-void bmp388ReadCoeffs(BMP388_Calib_t* calibration){
-    uint8_t rawData[21];
-    readI2C(BMP388_ADDR, BMP388_REG_COEFF, rawData, 21);
-
-    calibration->T1 = (uint16_t)((rawData[1] << 8) | rawData[0]);
-    calibration->T2 = (uint16_t)((rawData[3] << 8) | rawData[2]);
-    calibration->T3 = (int8_t)rawData[4];
-    calibration->P1 = (int16_t)((rawData[6] << 8) | rawData[5]);
-    calibration->P2 = (int16_t)((rawData[8] << 8) | rawData[7]);
-    calibration->P3 = (int8_t)rawData[9];
-    calibration->P4 = (int8_t)rawData[10];
-    calibration->P5 = (uint16_t)((rawData[12] << 8) | rawData[11]);
-    calibration->P6 = (uint16_t)((rawData[14] << 8) | rawData[13]);
-    calibration->P7 = (int8_t)rawData[15];
-    calibration->P8 = (int8_t)rawData[16];
-    calibration->P9 = (int16_t)((rawData[18] << 8) | rawData[17]);
-    calibration->P10 = (int8_t)rawData[19];
-    calibration->P11 = (int8_t)rawData[20];
 }
 
 void bmp388Measure(BMP388_Calib_t const* calibration, int32_t* pressure, int16_t* temp)

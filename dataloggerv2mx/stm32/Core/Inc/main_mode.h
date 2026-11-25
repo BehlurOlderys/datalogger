@@ -17,7 +17,8 @@ typedef enum
     MAIN_MODE_UART_TXT      = 0x08,
     MAIN_MODE_UART_BIN      = 0x10,
     MAIN_MODE_COMMUNICATION = 0x20,
-    MAIN_MODE_ERROR         = 0x40,
+    MAIN_MODE_READ_FLASH    = 0x40,
+    MAIN_MODE_ERROR         = 0x80,
 } MainMode;
 
 #endif /* INC_MAIN_MODE_H_ */
