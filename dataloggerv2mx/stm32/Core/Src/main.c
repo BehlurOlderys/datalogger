@@ -11,6 +11,7 @@
 #include "lsm6dso.h"
 #include "mx25l32.h"
 #include "base.h"
+#include "main_mode.h"
 #include "uart_defines.h"
 #include "stm32c0xx_ll_i2c.h"
 #include <assert.h>
@@ -27,20 +28,17 @@ static_assert(sizeof(FlashPage_t) == 256, "FlashPage_t size mismatch!");
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define DELAY_MS_SLOW 200
-#define DELAY_MS_FAST 40
+#define DELAY_MS_DEBUG 200
+#define DELAY_MS_SLOW  40
 
-typedef enum
-{
-    MAIN_MODE_INITIAL       = 0x01,
-    MAIN_MODE_MEASUREMENT   = 0x11,
-    MAIN_MODE_STORAGE       = 0xA7,
-    MAIN_MODE_ERROR         = 0xCC,
-    MAIN_MODE_UART_TXT      = 0xB4,
-    MAIN_MODE_UART_BIN      = 0xC8,
-    MAIN_MODE_COMMUNICATION = 0xFC,
-    MAIN_MODE_UNDEFINED     = 0x00
-} MainMode;
+typedef enum {
+    MEAS_MODE_UNDEFINED = 0x00,  // 0000 0000
+    MEAS_MODE_OFF       = 0x03,  // 0000 0011
+    MEAS_MODE_DEBUG     = 0x0C,  // 0000 1100
+    MEAS_MODE_SLOW      = 0x30,  // 0011 0000
+    MEAS_MODE_FAST      = 0xC0,   // 1100 0000
+    MEAS_MODE_EOE       = 0xFF
+} MeasurementMode;
 
 /* USER CODE END PD */
 
@@ -53,14 +51,18 @@ typedef enum
 I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN PV */
-static DataFrame_t* currentFrame;
+static DataFrame_t* currentFrame = NULL;
 //static int32_t currentPressure;    //x100
 //static int16_t currentTemperature; //x100
 //static int16_t rawXYZGyroAndAcc[6]; // gx, gy, gz, ax, ay, az
 static BMP388_Calib_t bmp388Calibration;
 
-volatile MainMode currentMode = MAIN_MODE_INITIAL;
-volatile uint16_t currentDelay = DELAY_MS_SLOW;
+static const uint8_t MEAS_MODE_ANY_ON = (MEAS_MODE_DEBUG | MEAS_MODE_SLOW | MEAS_MODE_FAST);
+
+volatile MainMode mainMode = MAIN_MODE_INITIAL;
+volatile MainMode previousMode = MAIN_MODE_UNDEFINED;
+volatile MeasurementMode measurementMode = MEAS_MODE_OFF;
+volatile uint16_t currentDelay = DELAY_MS_DEBUG;
 FlashPage_t flashPage;
 GetNewFrameStatus lastAddNewFrame = GET_NEW_FRAME_UNDEFINED;
 volatile uint8_t uartRxBuffer[RX_BUFFER_SIZE];
@@ -68,8 +70,8 @@ volatile uint8_t uartRxIndex;
 volatile uint8_t bufReadPos = 0;
 volatile uint8_t bufWritePos = 0;
 uint32_t lastTick = 0;
-uint32_t currentPageIndex = 0; // TODO: not written anywhere so far
-volatile uint8_t changeModeToComm = 0;
+uint32_t nextPageIndex = 0; // TODO: not written anywhere so far
+volatile uint8_t handleUartRxFlag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -88,6 +90,8 @@ static void checkBMP388();
 static void checkLSM6DSO();
 static void checkMX25L32();
 static void handleUartRx();
+static void tryChangingMeasurementMode(MeasurementMode newMode, uint16_t delay);
+static void tryPerformingMeasurement();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -281,36 +285,99 @@ static void checkMX25L32(){
 void handleUartRx(){
     bufWritePos = uartRxIndex;
     char actual[2] = {0};
+
     while (bufReadPos != bufWritePos){
         actual[0] = uartRxBuffer[bufReadPos++];
     }
-//    sendStringUart("ACTUAL RX: ");
-//    sendStringUart(actual);
-//    sendStringUart("\r\n");
-
-    if (actual[0] == 'U'){
-        currentMode = MAIN_MODE_UART_TXT;
+    if (actual[0] == 'I'){
+        mainMode = MAIN_MODE_IDLE;
+        sendStringUart("MODE=IDLE\r\n");
+    }
+    else if (actual[0] == 'T'){
+        mainMode = MAIN_MODE_UART_TXT;
         sendStringUart("MODE=UART_TXT\r\n");
     }
     else if (actual[0] == 'B'){
-        currentMode = MAIN_MODE_UART_BIN;
+        mainMode = MAIN_MODE_UART_BIN;
         sendStringUart("MODE=UART_BIN\r\n");
     }
-    else if (actual[0] == 'D'){
-        currentMode = MAIN_MODE_UNDEFINED;
-        sendStringUart("MODE=UNDEFINED\r\n");
+    else if (actual[0] == 'S'){
+        mainMode = MAIN_MODE_STORAGE;
+        sendStringUart("MODE=STORE\r\n");
+    }
+    else if (actual[0] == 'O')
+    {
+        tryChangingMeasurementMode(MEAS_MODE_OFF, DELAY_MS_DEBUG);
+    }
+    else if (actual[0] == 'D')
+    {
+        tryChangingMeasurementMode(MEAS_MODE_DEBUG, DELAY_MS_DEBUG);
+    }
+    else if (actual[0] == 'L')
+    {
+        tryChangingMeasurementMode(MEAS_MODE_SLOW, DELAY_MS_SLOW);
     }
     else if (actual[0] == 'F')
     {
-        currentDelay = DELAY_MS_FAST;
-    }
-    else if (actual[0] == 'S')
-    {
-        currentDelay = DELAY_MS_SLOW;
+        // TODO: currentDelay = DELAY_MS_FAST, but dunno what's that yet
+        tryChangingMeasurementMode(MEAS_MODE_FAST, DELAY_MS_SLOW);
     }
     else if (actual[0] == 'A'){
         sendStringUart("ACK\r\n");
     }
+    if (mainMode == MAIN_MODE_COMMUNICATION)
+    {
+        mainMode = previousMode;
+    }
+}
+
+void tryChangingMeasurementMode(MeasurementMode newMode, uint16_t delay)
+{
+    if (((measurementMode & MEAS_MODE_ANY_ON) == 0) &&
+        ((newMode & MEAS_MODE_ANY_ON) != 0))
+    {
+        lastTick = uwTick;
+        if (startNewPage(uwTick, nextPageIndex++, &flashPage) != SUCCESS)
+        {
+            mainMode = MAIN_MODE_ERROR;
+            measurementMode = MEAS_MODE_OFF;
+        }
+        else
+        {
+            measurementMode = newMode;
+            currentDelay = delay;
+        }
+    }
+    else {
+        measurementMode = newMode;
+        currentDelay = delay;
+    }
+}
+
+static void tryPerformingMeasurement()
+{
+    do{
+        if (lastAddNewFrame == GET_NEW_FRAME_FULL)
+        {
+            lastTick = uwTick;
+            if (startNewPage(lastTick, nextPageIndex++, &flashPage) != SUCCESS)
+            {
+                mainMode = MAIN_MODE_ERROR;
+                break;
+            }
+        }
+        lastAddNewFrame = addNewFrame(&flashPage, uwTick, &currentFrame);
+        if (lastAddNewFrame == GET_NEW_FRAME_ERROR)
+        {
+            mainMode = MAIN_MODE_ERROR;
+            break;
+        }
+        else
+        {
+            bmp388Measure(&bmp388Calibration, &(currentFrame->pressure), &(currentFrame->temperature));
+            lsm6dsoMeasure(currentFrame->gyroAndAcc);
+        }
+    } while(0);
 }
 
 /* USER CODE END 0 */
@@ -372,60 +439,41 @@ int main(void)
   checkLSM6DSO();
   checkMX25L32();
   sendStringUart("WHILE\r\n");
-  lastTick = uwTick;
-  if (startNewPage(uwTick, currentPageIndex++, &flashPage) != SUCCESS)
-  {
-      currentMode = MAIN_MODE_ERROR;
-  }
-  else {
-      currentMode = MAIN_MODE_MEASUREMENT;
-  }
+  mainMode = MAIN_MODE_IDLE;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while(1)
   {
-      LL_mDelay(currentDelay);
-      if (lastAddNewFrame == GET_NEW_FRAME_FULL)
+      if (mainMode == MAIN_MODE_ERROR)
       {
-          if (startNewPage(uwTick, currentPageIndex++, &flashPage) != SUCCESS)
-          {
-              currentMode = MAIN_MODE_ERROR;
-          }
+          __disable_irq();
+          while(1){ __WFI(); };
       }
-      lastAddNewFrame = addNewFrame(&flashPage, uwTick, &currentFrame);
-      if (lastAddNewFrame != GET_NEW_FRAME_ERROR)
+      else if (mainMode == MAIN_MODE_IDLE)
       {
-          bmp388Measure(&bmp388Calibration, &(currentFrame->pressure), &(currentFrame->temperature));
-          lsm6dsoMeasure(currentFrame->gyroAndAcc);
-          if (lastAddNewFrame == GET_NEW_FRAME_FULL)
-          {
-              addCrc16(&flashPage);
-          }
+          __disable_irq();
+           if (mainMode == MAIN_MODE_IDLE)
+           {
+               __WFI();
+           }
+           __enable_irq();
       }
-      else {
-          currentMode = MAIN_MODE_ERROR;
-      }
-      /************* MODE HANDLING: ***********************/
-      if (currentMode == MAIN_MODE_UART_TXT)
+      else if (mainMode == MAIN_MODE_UART_TXT)
       {
           logPageToUartTxt();
       }
-      else if (currentMode == MAIN_MODE_UART_BIN)
+      else if (mainMode == MAIN_MODE_COMMUNICATION)
       {
-          logToUartBin();
-      }
-      else if (currentMode == MAIN_MODE_ERROR)
-      {
-          while(1){ __WFI(); };
-      }
-      if (changeModeToComm)
-      {
-          changeModeToComm = 0;
           handleUartRx();
       }
-  }
+      if ((measurementMode & MEAS_MODE_ANY_ON) != 0)
+      {
+          tryPerformingMeasurement();
+      }
+      LL_mDelay(currentDelay);
+  }  // end of main loop
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

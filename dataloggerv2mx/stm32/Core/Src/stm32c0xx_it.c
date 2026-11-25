@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "uart_defines.h"
+#include "main_mode.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,7 +34,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 extern volatile uint8_t uartRxIndex;
-extern volatile uint8_t changeModeToComm;
+extern volatile MainMode mainMode;
+extern volatile MainMode previousMode;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -176,12 +178,16 @@ void USART1_IRQHandler(void)
   /* USER CODE BEGIN USART1_IRQn 0 */
     static uint32_t maxSize = RX_BUFFER_SIZE;
 
-    if (LL_USART_IsActiveFlag_IDLE(USART1) && LL_USART_IsEnabledIT_IDLE(USART1))
+    if ((mainMode != MAIN_MODE_COMMUNICATION) &&
+        LL_USART_IsActiveFlag_IDLE(USART1) &&
+        LL_USART_IsEnabledIT_IDLE(USART1))
     {
         LL_USART_ClearFlag_IDLE(USART1);
 
         uartRxIndex = (uint8_t)(maxSize - LL_DMA_GetDataLength(DMA1, LL_DMA_CHANNEL_1));
-        changeModeToComm = 1;
+
+        previousMode = mainMode;
+        mainMode = MAIN_MODE_COMMUNICATION;
     }
 
   /* USER CODE END USART1_IRQn 0 */

@@ -9,6 +9,7 @@
 #define INC_BASE_H_
 
 #include <stdint.h>
+#include "stm32c0xx.h"
 
 void uintToAscii(uint64_t val, char* buf, uint8_t size);
 void intToAscii(int16_t val, char* buf, uint8_t size);
