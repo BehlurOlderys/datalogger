@@ -132,9 +132,9 @@ static void logFrameToUartTxt(DataFrame_t* frame)
     sendStringUart(") ");
     /*********************************** LOG T and P **********/
     char tstring[5] = {0};
-    char pstring[8] = {0};
+    char pstring[9] = {0};
     uintToAscii(frame->temperature, tstring, 4);
-    uintToAscii(frame->pressure, pstring, 7);
+    uintToAscii(frame->pressure, pstring, 8);
     sendStringUart("T=");
     sendStringUart(tstring);
     sendStringUart(", P=");
@@ -147,6 +147,10 @@ static void logPageToUartTxt()
     if (lastAddNewFrame != GET_NEW_FRAME_FULL)
     {
         sendStringUart(".");
+        return;
+    }
+    if (SUCCESS != addCrc16(&flashPage))
+    {
         return;
     }
     char stringFor8[4] = {0};
@@ -238,23 +242,23 @@ void handleUartRx(){
     switch (actual[0]){
     case 'I':
         mainMode = MAIN_MODE_IDLE;
-        sendStringUart("MODE=IDLE\r\n");
+        sendStringUart("\r\nMODE=IDLE\r\n");
         break;
     case'T':
         mainMode = MAIN_MODE_UART_TXT;
-        sendStringUart("MODE=UART_TXT\r\n");
+        sendStringUart("\r\nMODE=UART_TXT\r\n");
         break;
     case'B':
         mainMode = MAIN_MODE_UART_BIN;
-        sendStringUart("MODE=UART_BIN\r\n");
+        sendStringUart("\r\nMODE=UART_BIN\r\n");
         break;
     case 'S':
         mainMode = MAIN_MODE_STORAGE;
-        sendStringUart("MODE=STORE\r\n");
+        sendStringUart("\r\nMODE=STORE\r\n");
         break;
     case 'R':
         mainMode = MAIN_MODE_READ_FLASH;
-        sendStringUart("MODE=READ\r\n");
+        sendStringUart("\r\nMODE=READ\r\n");
         break;
     case 'O':
         tryChangingMeasurementMode(MEAS_MODE_OFF, DELAY_MS_DEBUG);
@@ -268,9 +272,6 @@ void handleUartRx(){
     case 'F':
         // TODO: currentDelay = DELAY_MS_FAST, but dunno what's that yet
         tryChangingMeasurementMode(MEAS_MODE_FAST, DELAY_MS_SLOW);
-        break;
-    case 'A':
-        sendStringUart("ACK\r\n");
         break;
     default:
         __NOP();
@@ -297,6 +298,11 @@ void tryChangingMeasurementMode(MeasurementMode newMode, uint16_t delay)
         }
         measurementMode = newMode;
         currentDelay = delay;
+        char modeStr[3] = {0};
+        uintToAscii(newMode, modeStr, 2);
+        sendStringUart("\r\nMEAS=");
+        sendStringUart(modeStr);
+        sendStringUart("\r\n");
     } while(0);
 }
 
