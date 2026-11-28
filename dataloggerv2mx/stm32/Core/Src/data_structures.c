@@ -26,7 +26,7 @@ static uint16_t calculateCrc16(const uint8_t *data, size_t length) {
 ErrorStatus startNewPage(uint32_t timestamp, uint32_t pageIndex, FlashPage_t* constructed)
 {
     memset(constructed, 0, sizeof(FlashPage_t));
-    constructed->header.magicNumber = 0x00F9CF00;
+    constructed->header.magicNumber = 0x1ACFFC1D;
 //    constructed->header.nextFrameIndex = 0;
 //    constructed->header.crc16 = 0;  // best if no one touches it
     constructed->header.pageIndex = pageIndex;

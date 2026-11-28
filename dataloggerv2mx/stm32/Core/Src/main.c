@@ -72,6 +72,7 @@ volatile uint8_t bufWritePos = 0;
 uint32_t lastTick = 0;
 uint32_t nextPageIndex = 0; // TODO: not written anywhere so far
 volatile uint8_t handleUartRxFlag = 0;
+volatile uint32_t nextAddressToReadFromFlash = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -335,8 +336,13 @@ static void tryPerformingMeasurement()
 static void handleFlashReading()
 {
     measurementMode = MEAS_MODE_OFF;
-    // TODO: read from actual flash. Now just send some rubbish:
-    sendBytesUart((void*)0x20000000, 1024);
+//    // TODO: read from actual flash. Now just send some rubbish:
+    FlashPage_t readPage;
+    for (uint8_t i = 0; i < 10; ++i)
+    {
+        startNewPage(uwTick, i, &readPage);
+        sendBytesUart((void*)&readPage, sizeof(FlashPage_t));
+    }
     mainMode = MAIN_MODE_IDLE;
 }
 

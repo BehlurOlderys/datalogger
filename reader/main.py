@@ -5,6 +5,9 @@ import serial.tools.list_ports
 import json
 from time import sleep
 import parse
+import ctypes
+import struct
+
 
 frame_parser = parse.compile(
     "I={frame_index:03d}: [{time_diff:06d}] "
@@ -12,6 +15,61 @@ frame_parser = parse.compile(
     "A=({ax:+05d}, {ay:+05d}, {az:+05d}) "
     "T={temperature:04d}, P={pressure:08d}"
 )
+# TODO: this should be generated and synced to data_structures.h!
+
+MAX_FRAMES_PER_PAGE = 12
+
+class DataFrame(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("deltaTime", ctypes.c_uint16),
+        ("temperature", ctypes.c_int16),
+        ("pressure", ctypes.c_uint32),
+        ("gyroAndAcc", ctypes.c_int16 * 6)
+    ]
+
+    def __str__(self):
+        imu = list(self.gyroAndAcc)
+        return (
+            f"dt={self.deltaTime:04}ms | "
+            f"temp={self.temperature:04} | "
+            f"press={self.pressure:08} | "
+            f"imu={imu}"
+        )
+
+class PageHeader(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("magicNumber", ctypes.c_uint32),
+        ("timestamp", ctypes.c_uint32),
+        ("pageIndex", ctypes.c_uint32),
+        ("nextFrameIndex", ctypes.c_uint16),
+        ("crc16", ctypes.c_uint16)
+    ]
+
+    def __str__(self):
+        return (
+            f"Page #{self.pageIndex} "
+            f"(magic=0x{self.magicNumber:08X}, "
+            f"ts={self.timestamp}, "
+            f"frames={self.nextFrameIndex}/12, "
+            f"crc=0x{self.crc16:04X})"
+        )
+
+class FlashPage(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("header", PageHeader),
+        ("frames", DataFrame * MAX_FRAMES_PER_PAGE),
+    ]
+
+    def __str__(self):
+        lines = [f"=== {self.header} ==="]
+        for i in range(0, MAX_FRAMES_PER_PAGE):
+            lines.append(f"  [{i:02d}] {self.frames[i]}")
+
+        return "\n".join(lines)
+
 
 # FTDI Vendor ID
 FTDI_VID = 0x0403
@@ -50,9 +108,14 @@ class ResponseNotFound(Exception):
     """Expected response not found"""
     pass
 
+
 def wait_for_a_text_on_serial(serial_instance: serial.Serial, expected_text: str, max_retries: int=10) -> None:
     for try_index in range(0, max_retries):
-        recv_line = serial_instance.readline().decode('utf-8').strip()
+        try:
+            recv_line = serial_instance.readline().decode('utf-8').strip()
+        except UnicodeDecodeError as e:
+            logging.warning(f"Typical decoding error: we read something not meant to be read. Skipping. Retries left: {max_retries - 1 - try_index}/{max_retries}")
+            continue
         logging.debug(f"received: {recv_line}")
         if recv_line == expected_text:
             return
@@ -62,6 +125,75 @@ def wait_for_a_text_on_serial(serial_instance: serial.Serial, expected_text: str
         else:
             logging.warning(f"Timeout on serial read line, retries left: {max_retries - 1 - try_index}/{max_retries}")
     raise ResponseNotFound(f"Not found {expected_text}")
+
+
+def read_text(serial_instance: serial.Serial):
+    serial_instance.write(b'T')
+    wait_for_a_text_on_serial(serial_instance=serial_instance, expected_text="MODE=UART_TXT", max_retries=100)
+    serial_instance.write(b'L')
+    wait_for_a_text_on_serial(serial_instance=serial_instance, expected_text="MEAS=48")
+    while True:
+        line = serial_instance.readline().decode('utf-8').strip()
+        if SOP_MARKER in line:
+            logging.debug("Start of page!")
+            continue
+        elif EOP_MARKER in line:
+            logging.debug("End of page!")
+            continue
+        else:
+            res = frame_parser.parse(line)
+            if res:
+                logging.info(res.named)
+            else:
+                logging.warning(f"Couldn't parse {line}, skipping...")
+
+def read_binary(serial_instance: serial.Serial):
+    MAGIC_BYTES = struct.pack("<I", 0x1ACFFC1D)  # Replace with your magic number
+    PACKET_SIZE = ctypes.sizeof(FlashPage)  # Your ctypes.LittleEndianStructure
+
+    logging.debug(f"I hope this reads 256: {PACKET_SIZE}")
+    in_buffer = bytearray()
+    serial_instance.write(b'B')
+    wait_for_a_text_on_serial(serial_instance=serial_instance, expected_text="MODE=UART_BIN", max_retries=100)
+    serial_instance.write(b'L')
+    wait_for_a_text_on_serial(serial_instance=serial_instance, expected_text="MEAS=48")
+
+    while True:
+        waiting = serial_instance.in_waiting
+        chunk = serial_instance.read(waiting if waiting > 0 else 1)
+        if not chunk:
+            continue
+        in_buffer.extend(chunk)
+        while len(in_buffer) >= PACKET_SIZE:
+            logging.debug(f"Current buffer length: {len(in_buffer)}")
+            idx = in_buffer.find(MAGIC_BYTES)
+            if idx == -1:
+                logging.debug("Dropping buffer all but last 3 bytes")
+                del in_buffer[:-3]
+                break
+
+            if idx > 0:
+                logging.debug("Dropping buffer all up to where magic number was found ({idx})")
+                del in_buffer[:idx]
+                if len(in_buffer) < PACKET_SIZE: #so we need to read more
+                    break
+
+            candidate = in_buffer[:PACKET_SIZE]
+
+            # if self._verify_crc(candidate):
+            #     # Valid packet! Remove it from buffer and return struct
+            #     del self.buf[:PACKET_SIZE]
+            page = FlashPage.from_buffer_copy(candidate)
+            logging.info(f"Successfully read page:\n{page}")
+            logging.debug(f"Dropping {PACKET_SIZE} from buffer after successful readout")
+            del in_buffer[:PACKET_SIZE]
+            # else:
+            #     # Corrupted packet or false magic sync:
+            #     # Drop ONLY the 4 magic bytes and keep scanning from byte 4
+            #     del self.buf[:4]
+
+
+
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -91,32 +223,14 @@ if __name__ == '__main__':
         logging.info(f"Serial connection opened on {arduino_port} with baudrate {baudrate}")
         
         if ser.is_open:
-            for i in range(0, 10):
-                rubbish = ser.readline()
-                logging.debug(rubbish)
-                if not rubbish:
-                    break
-            logging.info("Serial port is open and ready")
-            ser.write(b'T')
-            wait_for_a_text_on_serial(serial_instance=ser, expected_text="MODE=UART_TXT", max_retries=100)
-            ser.write(b'L')
-            wait_for_a_text_on_serial(serial_instance=ser, expected_text="MEAS=48")
-            while True:
-                line = ser.readline().decode('utf-8').strip()
-                if SOP_MARKER in line:
-                    logging.debug("Start of page!")
-                    continue
-                elif EOP_MARKER in line:
-                    logging.debug("End of page!")
-                    continue
-                else:
-                    # logging.info(line)
-                    res = frame_parser.parse(line)
-                    if res:
-                        logging.info(res.named)
-                    else:
-                        logging.warning(f"Couldn't parse {line}, skipping...")
-
+            # for i in range(0, 10):
+            #     rubbish = ser.readline()
+            #     logging.debug(rubbish)
+            #     if not rubbish:
+            #         break
+            # logging.info("Serial port is open and ready")
+            # read_text(serial_instance=ser)
+            read_binary(serial_instance=ser)
 
 
         else:
